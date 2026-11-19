@@ -157,7 +157,7 @@ export async function api(path, { json, headers = {}, ...options } = {}) {
     throw new Error(t('error.network'), { cause });
   }
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(body.error?.message || t('error.request')), { status: response.status });
+  if (!response.ok) throw Object.assign(new Error(body.error?.message || t('error.request')), { status: response.status, code: body.error?.code });
   return body;
 }
 

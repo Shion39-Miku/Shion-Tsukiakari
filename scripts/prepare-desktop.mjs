@@ -12,7 +12,15 @@ export async function prepareDesktop() {
   const backend = join(output, 'backend'); await mkdir(backend, {recursive:true});
   for (const name of ['server','public','migrations','content','site.json']) await cp(join(root,name),join(backend,name),{recursive:true});
   await mkdir(join(backend,'runtime'),{recursive:true});await copyFile(process.execPath,join(backend,'runtime','node.exe'));
-  const license=await fetch('https://raw.githubusercontent.com/nodejs/node/'+process.version+'/LICENSE',{signal:AbortSignal.timeout(25000)});if(!license.ok)throw Error('无法取得Node运行时许可证');await writeFile(join(backend,'runtime','NODE-LICENSE.txt'),await license.text());
+  const bundledLicense = join(desktop, 'licenses', 'node-' + process.version + '.txt');
+  const licenseTarget = join(backend, 'runtime', 'NODE-LICENSE.txt');
+  // The pinned runtime's upstream license travels with the source for repeatable offline builds.
+  if (existsSync(bundledLicense)) await copyFile(bundledLicense, licenseTarget);
+  else {
+    const license = await fetch('https://raw.githubusercontent.com/nodejs/node/' + process.version + '/LICENSE', { signal: AbortSignal.timeout(25000) });
+    if (!license.ok) throw Error('无法取得当前 Node 运行时许可证，请使用项目固定的 Node 版本。');
+    await writeFile(licenseTarget, await license.text());
+  }
   await copyProductionDependencies(join(backend,'node_modules'));
   await writeFile(join(backend,'package.json'),JSON.stringify({private:true,type:'module'}));
   await copyFile(join(desktop, 'backend.mjs'), join(backend, 'desktop-backend.mjs'));

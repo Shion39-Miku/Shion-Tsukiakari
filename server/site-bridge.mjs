@@ -12,13 +12,16 @@ export function createSiteBridge({baseUrl,eventToken='',db}){
  const origin=new URL(baseUrl).origin;
  check(new URL(origin).protocol==='https:'||['127.0.0.1','localhost','[::1]'].includes(new URL(origin).hostname),'网站联动须使用HTTPS或本机地址。');
  const cookies=req=>(req.headers.cookie||'').split(';').map(x=>x.trim()).filter(x=>!x.startsWith('hoshifuru_')&&!x.startsWith('moonlit_chat_session=')).join('; ');
- async function fetchSite(path,{req,method='GET',body,headers={}}={}){
-  const response=await fetch(origin+path,{method,redirect:'error',signal:AbortSignal.timeout(30000),headers:{Cookie:req?cookies(req):'','Content-Type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body)});
+ async function fetchSite(path,{req,method='GET',body,headers={},timeout=30000}={}){
+  let response;
+  try {
+   response=await fetch(origin+path,{method,redirect:'error',signal:AbortSignal.timeout(timeout),headers:{Cookie:req?cookies(req):'','Content-Type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body)});
+  } catch { throw new Problem(503, 'website_unavailable', '暂时无法连接网站后端，请检查后重试。'); }
   if(!response.ok){const value=await response.json().catch(()=>({}));throw new Problem(response.status===401?403:response.status,'website_'+(value.error?.code||'unavailable'),response.status===401?'请先连接网站管理员账号。':value.error?.message||'网站后端暂不可达。');}return response;
  }
  const get=async(path,req)=>(await fetchSite(path,{req})).json();
  async function siteSession(req){return get('/api/admin/session',req);}
- async function login(credentials){const r=await fetchSite('/api/admin/login',{method:'POST',body:credentials});return r.headers.getSetCookie();}
+ async function login(credentials){const r=await fetchSite('/api/admin/login',{method:'POST',body:credentials,timeout:5000});return r.headers.getSetCookie();}
  function shouldProxy(path){return path.startsWith('/api/public/')||path.startsWith('/api/v1/')||path.startsWith('/api/admin/')&&!path.startsWith('/api/admin/accounts')||['/','/about','/music','/games','/cats','/questions','/admin','/admin/login'].includes(path)||path.startsWith('/media/');}
  async function handle(req,res,url){
   const path=url.pathname;

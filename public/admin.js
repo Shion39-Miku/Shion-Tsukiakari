@@ -30,12 +30,18 @@ let session;
 let activePanel;
 let selectPanel;
 let mountEpoch = 0;
+let websiteConnector;
 
 if (!embedded) bindFavicon();
 if (!embedded) document.title = `管理后台 · ${site.browserTitle || site.name}`;
 
 const auth = (path, options = {}) => api(`/api/admin${path}`, {
   ...options, headers: { ...options.headers, 'X-CSRF-Token': session?.csrf || '' },
+}).catch(error => {
+  if (embedded && error.code === 'website_login_required' && !main.querySelector('.website-connection')) {
+    showWebsiteConnection(error, websiteConnector, mountEpoch, true);
+  }
+  throw error;
 });
 
 function drawHeader() {
@@ -560,13 +566,60 @@ function showWorkspace() {
 }
 
 export function activateAdminPanel(name) { selectPanel?.(name); }
-export async function mountAdmin() {
+
+function showWebsiteConnection(error, connectWebsite, epoch, preserveWorkspace = false) {
+  const accountExpired = error.code === 'login_required' && error.status === 401;
+  if (accountExpired) dispatchEvent(new Event('chat-auth-expired'));
+  const username = el('input', { required: true, autocomplete: 'username', maxlength: 40, 'aria-label': '网站管理员账号' });
+  const password = el('input', { type: 'password', required: true, autocomplete: 'current-password', maxlength: 256, 'aria-label': '网站管理员密码' });
+  const submit = action('连接网站后台', 'lock', { type: 'submit', class: 'button button-primary' });
+  const retry = action('重试连接');
+  const status = el('p', { class: 'inline-status', role: 'status' });
+  showStatus(status, error.message, 'error');
+  const form = el('form', { class: 'website-connection' },
+    el('h2', {}, '网站后台连接'),
+    el('p', { class: 'muted' }, '使用詩音の月光庭院的管理员账号。聊天账号继续有效。'),
+    connectWebsite && labeled('网站管理员账号', username),
+    connectWebsite && labeled('网站管理员密码', password),
+    status, el('div', { class: 'form-actions' }, connectWebsite && submit, retry));
+  const connect = async (signedIn) => {
+    if (submit.disabled) return;
+    submit.disabled = retry.disabled = true;
+    showStatus(status, '正在连接网站后台…');
+    try {
+      if (signedIn) await connectWebsite({ username: username.value.trim(), password: password.value });
+      password.value = '';
+      const verified = await api('/api/admin/session', { signal: AbortSignal.timeout(10000) });
+      if (epoch !== mountEpoch) return;
+      session = verified;
+      if (preserveWorkspace) { form.parentElement.remove(); toast('网站后台已重新连接，可以继续保存。'); }
+      else showWorkspace();
+    } catch (err) { showStatus(status, err.message, 'error'); }
+    finally { submit.disabled = retry.disabled = false; }
+  };
+  retry.onclick = () => connect(false);
+  form.onsubmit = event => { event.preventDefault(); if (connectWebsite) void connect(true); };
+  const panel = el('div', { class: 'frame admin-loading' }, form);
+  if (preserveWorkspace) { main.prepend(panel); main.scrollTop = 0; }
+  else main.replaceChildren(panel);
+}
+
+export async function mountAdmin({ connectWebsite } = {}) {
   const epoch = ++mountEpoch;
+  websiteConnector = connectWebsite;
   activePanel = null;
+  selectPanel = null;
   drawHeader();
   main.replaceChildren(el('div', { class: 'frame admin-loading' }, empty('正在读取会话…')));
-  try { const next = await api('/api/admin/session'); if (epoch !== mountEpoch) return; session = next; showWorkspace(); }
-  catch { if (epoch === mountEpoch) showLogin(); }
+  try {
+    const next = await api('/api/admin/session', { signal: AbortSignal.timeout(10000) });
+    if (epoch !== mountEpoch) return;
+    session = next; showWorkspace();
+  } catch (error) {
+    if (epoch !== mountEpoch) return;
+    if (embedded) showWebsiteConnection(error, connectWebsite, epoch);
+    else showLogin();
+  }
 }
-export function unmountAdmin() { mountEpoch++; session = null; activePanel = null; selectPanel = null; main.replaceChildren(); header.replaceChildren(); }
+export function unmountAdmin() { mountEpoch++; session = null; activePanel = null; selectPanel = null; websiteConnector = null; main.replaceChildren(); header.replaceChildren(); }
 if (!embedded) mountAdmin();

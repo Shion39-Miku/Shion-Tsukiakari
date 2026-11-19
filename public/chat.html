@@ -29,8 +29,13 @@
     <button id="sidebar-shade" class="sidebar-shade" aria-label="收起导航" hidden></button>
     <div class="app-workspace">
       <header id="app-header" class="app-header"></header>
+      <div id="chat-connection" class="chat-connection" hidden>
+        <span role="status">实时消息连接中断，正在重连。草稿会保留。</span>
+        <button class="button" type="button">立即重连</button>
+      </div>
       <main id="chat-view" class="chat-view">
         <section id="conversation" class="conversation" tabindex="-1" aria-label="对话记录"><div id="message-list" class="message-list"></div></section>
+        <button id="chat-latest" class="button chat-latest" type="button" hidden>回到最新</button>
         <form id="composer" class="composer" aria-label="发送消息"></form>
       </main>
       <main id="library-view" class="app-scroll library-view" hidden aria-label="网站栏目"></main>

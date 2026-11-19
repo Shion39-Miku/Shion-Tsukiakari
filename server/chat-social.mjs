@@ -8,15 +8,21 @@ export function createSocial(db, { emit, own, invalidate = () => {} }) {
   db.prepare('DELETE FROM chat_presence_connections').run();
   const rawUsers = () => [...db.prepare("SELECT 'admin:'||id AS key,id,username,'admin' AS role FROM admins").all(),
     ...db.prepare("SELECT 'member:'||id AS key,id,username,'member' AS role FROM chat_accounts WHERE disabled=0").all()];
+  const adminById = db.prepare("SELECT username,'admin' AS role FROM admins WHERE id=?");
+  const memberById = db.prepare("SELECT username,'member' AS role FROM chat_accounts WHERE id=? AND disabled=0");
+  const profileByKey = db.prepare('SELECT * FROM chat_profiles WHERE account_key=?');
+  const onlineByKey = db.prepare('SELECT 1 FROM chat_presence_connections WHERE account_key=? AND heartbeat_at>? LIMIT 1');
+  const renewPresence = db.prepare('INSERT INTO chat_presence_connections VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET heartbeat_at=excluded.heartbeat_at');
   function ensureProfiles() {
     const insert = db.prepare('INSERT INTO chat_profiles(account_key,public_id,display_name,updated_at) VALUES(?,?,?,?) ON CONFLICT(account_key) DO NOTHING');
     for (const user of rawUsers()) insert.run(user.key, (user.role === 'admin' ? 'A-' : 'U-') + user.id, user.username, now());
   }
   function profile(key, viewer = null) {
-    const account = rawUsers().find((u) => u.key === key);
-    const value = db.prepare('SELECT * FROM chat_profiles WHERE account_key=?').get(key);
+    const value = profileByKey.get(key);
     if (!value) return null;
-    const connected = Boolean(db.prepare('SELECT 1 FROM chat_presence_connections WHERE account_key=? AND heartbeat_at>? LIMIT 1').get(key, Date.now() - 75000));
+    const [role, id] = key.split(':', 2);
+    const account = (role === 'admin' ? adminById : memberById).get(id);
+    const connected = Boolean(onlineByKey.get(key, Date.now() - 75000));
     const status = value.preferred_status === 'invisible' && viewer !== key ? 'offline'
       : value.preferred_status === 'offline' || !connected ? 'offline' : value.preferred_status;
     return { key, id: value.public_id, username: account?.username || '已停用账号', displayName: value.display_name,
@@ -72,6 +78,14 @@ export function createSocial(db, { emit, own, invalidate = () => {} }) {
   }
   function openConnection(key, id) { db.prepare('INSERT INTO chat_presence_connections VALUES(?,?,?)').run(id, key, Date.now()); live.set(id, key); broadcastProfile(key); }
   function closeConnection(id) { if(closed)return;const key = live.get(id); live.delete(id); db.prepare('DELETE FROM chat_presence_connections WHERE id=?').run(id); if (key) broadcastProfile(key); }
+  function keepConnection(id) {
+    const key = live.get(id);
+    if (!key || closed) return;
+    const time = Date.now();
+    const wasOnline = onlineByKey.get(key, time - 75000);
+    renewPresence.run(id, key, time);
+    if (!wasOnline) broadcastProfile(key);
+  }
   const expiredPresence = setInterval(() => {
     const stale = db.prepare('SELECT DISTINCT account_key FROM chat_presence_connections WHERE heartbeat_at<?').all(Date.now() - 75000);
     db.prepare('DELETE FROM chat_presence_connections WHERE heartbeat_at<?').run(Date.now() - 75000); for (const { account_key } of stale) broadcastProfile(account_key);
@@ -172,7 +186,7 @@ export function createSocial(db, { emit, own, invalidate = () => {} }) {
     }
     return false;
   }
-  return {profile,users,resolveUser,friends,isFriend,relationship,members,ensureProfiles,invite,removeMember,invalidateRoster,openConnection,closeConnection,handle,
+  return {profile,users,resolveUser,friends,isFriend,relationship,members,ensureProfiles,invite,removeMember,invalidateRoster,openConnection,closeConnection,keepConnection,handle,
     message(row,viewer){const p=profile(row.senderKey || row.sender_key,viewer);return {...row,...(p?{senderName:p.displayName,senderId:p.id,senderAvatar:p.avatar}:{} )};},
     close(){closed=true;clearInterval(expiredPresence);db.prepare('DELETE FROM chat_presence_connections').run();live.clear();}};
 }

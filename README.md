@@ -4,6 +4,8 @@
 
 ![AI 聊天](docs/images/ai-chat.png)
 
+**0.4.1** 修复消息断线恢复、切页竞态、历史翻页和托盘误读。网站后台可单独重新登录，人格冲突可对照服务器版本。见[版本说明](docs/maintenance-0.4.1.md)。
+
 ## 功能
 
 - **分得清的会话**：AI、好友、群聊按真实会话类型分类；混合群的 AI 消息带身份标识。
@@ -15,7 +17,7 @@
 
 ## 安装与首次启动
 
-安装包名为 `Tsukiakari-0.4.0-Setup.exe`，程序文件为 `Tsukiakari.exe`；界面、快捷方式、托盘和通知显示「月明かり」。免安装版为 `Tsukiakari-0.4.0-Portable.exe`。
+0.4.1 的安装包名为 `Tsukiakari-0.4.1-Setup.exe`，免安装版为 `Tsukiakari-0.4.1-Portable.exe`。程序文件为 `Tsukiakari.exe`，界面、快捷方式、托盘和通知显示「月明かり」。
 
 构建结果见本地 `artifacts/desktop-app.json`。仓库不保存 EXE、运行数据库或任何实例凭据；正式可下载版本以 [Releases](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases) 实际内容为准。
 
@@ -28,7 +30,7 @@
 
 ## 界面预览
 
-以下均为 **0.4.0 真实 Electron 软件窗口**，由隔离的演示账号和演示数据生成。截图里的 AI 流式回复来自本地模拟 AstrBot 连接器，用于稳定复现界面；实际 AstrBot 接口另行联调，不把真实账号、地址和令牌放入截图。
+以下均为 **0.4.1 的真实软件窗口**，在隔离的演示环境中截取。AI 聊天截图使用模拟 AstrBot 回复。真实大肥鱼的联调结果见版本说明。
 
 | 好友私聊 | 包含 AI 的群聊 |
 | --- | --- |
@@ -42,10 +44,13 @@
 | --- | --- |
 | ![软件管理](docs/images/software-management.png) | ![人格设置](docs/images/persona-settings.png) |
 
+[断线时的聊天界面](docs/images/chat-reconnect.png)
+
 ## 使用与权限
 
 - 左侧功能栏进入聊天、月光庭院、个人设置；管理员另有「网站管理」「软件管理」。
 - 会话列表的 `+` 明确选择 AI、好友或群聊。分类、搜索、会话位置及输入草稿在切页时保留。
+- 连接中断时可留在当前会话编辑，自动重连后补齐消息。翻看旧记录时，点「查看新消息」可回到最新位置。
 - 群成员从会话右上角展开，加入需要目标本人接受邀请。退出后服务端撤销群历史和附件读取权限。
 - 「个人设置」分别管理资料、外观、通知、关闭行为、连接状态及记忆授权。
 - 「软件管理 → AI 人格／角色卡」读取和修改服务器人格，可导入 JSON / PNG；保存按钮显示实际同步结果。
@@ -55,7 +60,7 @@
 
 ## 开发运行
 
-Windows x64，Node.js 24.10+（24.x），pnpm 11.25.0。依赖已锁定。
+Windows x64，推荐使用项目固定的 Node.js 24.22.3 和 pnpm 11.25.0。固定版本的 Node 许可证随源码提供。依赖已锁定。
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -68,7 +73,7 @@ pnpm start:desktop
 
 ```powershell
 pnpm test                     # 后端、权限、上传、媒体与持久化
-pnpm check:app                # 原生界面验收；生成演示截图
+pnpm check:app                # 原生界面与断线回归，生成演示截图
 pnpm build                    # 生成不含私有配置的生产源码
 pnpm package:desktop          # 安装版与单文件免安装版
 pnpm check:desktop            # 把构建复制到工作区外独立验收

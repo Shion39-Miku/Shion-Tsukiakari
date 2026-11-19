@@ -13,12 +13,12 @@ import { setAdmin } from '../server/auth.mjs';
 test('social, invitations, AstrBot personas and scoped persistent memories',{timeout:90000},async t=>{
  const dir=await mkdtemp(join(tmpdir(),'hoshifuru-social-')),dbPath=join(dir,'chat.sqlite'),password=randomBytes(18).toString('hex'),packets=[];
  const personas=new Map([['fish',{id:'fish',name:'大肥鱼',description:'服务器人格',systemPrompt:'权威设定',beginDialogs:[],firstMessage:'你好',exampleDialogue:'',extensions:{},enabled:true,version:'v1',avatar:false}]]);
- let serial=1,available=true;const revocations=[];const mock=createServer(async(req,res)=>{
+ let serial=1,available=true,agentListingAvailable=true;const revocations=[];const mock=createServer(async(req,res)=>{
   const admin=req.headers.authorization==='Bearer admin-connector-token';const parts=[];for await(const c of req)parts.push(c);const body=parts.length?JSON.parse(Buffer.concat(parts)):{};
   const send=(v,s=200)=>{res.writeHead(s,{'Content-Type':'application/json'}).end(JSON.stringify(v));};
   if(!available)return send({error:{message:'unavailable'}},503);
   if(req.url.startsWith('/v2/personas')&&!admin)return send({error:{message:'forbidden'}},403);
-  if(req.url==='/v2/agents')return send({items:[...personas.values()],defaultId:'fish'});
+  if(req.url==='/v2/agents')return agentListingAvailable ? send({items:[...personas.values()],defaultId:'fish'}) : send({error:{message:'列表暂不可用'}},503);
   if(req.url==='/v2/personas'&&req.method==='GET')return send({items:[...personas.values()]});
   if(req.url==='/v2/personas'&&req.method==='POST'){const p={...body,version:'v'+(++serial)};personas.set(p.id,p);return send({item:p});}
   if(req.url.startsWith('/v2/personas/')){const id=decodeURIComponent(req.url.slice(13)),p=personas.get(id);if(req.method==='GET')return send({item:p});if(req.headers['if-match']!==p?.version)return send({error:{message:'version conflict'}},409);const next={...body,id,version:'v'+(++serial)};personas.set(id,next);return send({item:next});}
@@ -80,6 +80,30 @@ test('social, invitations, AstrBot personas and scoped persistent memories',{tim
   const conflict=await req('/api/chat/admin/personas/'+p.id,{as:owner,method:'PUT',json:{...p,systemPrompt:'过期覆盖'}});assert.equal(conflict.status,409);
   assert.equal((await req('/api/chat/admin/personas/drafts',{as:owner})).value.items.length,1);
   available=false;assert.equal((await req('/api/chat/admin/personas/'+p.id,{as:owner,method:'PUT',json:{...saved.value.item,systemPrompt:'离线编辑'}})).status,503);available=true;
+ });
+ await t.test('a verified persona write remains successful if the agent list subsequently fails', async () => {
+  const current = personas.get('fish');
+  agentListingAvailable = false;
+  try {
+   const updated = await req('/api/chat/admin/personas/fish', {
+    as: owner, method: 'PUT', json: { ...current, description: '已回读的人格' },
+   });
+   assert.equal(updated.status, 200);
+   assert.equal(updated.value.synced, true);
+   assert.equal(updated.value.agentsRefreshed, false);
+   assert.equal(updated.value.item.version, personas.get('fish').version);
+   assert.equal((await req('/api/chat/admin/personas/drafts', { as: owner })).value.items.length, 0);
+  } finally { agentListingAvailable = true; }
+ });
+ await t.test('two concurrent attempts for a first AI message create one row and one reply', async () => {
+  const dialogue = await thread(owner, 'ai');
+  const key = randomUUID(), text = '只需要一条用于重试验收的回复。';
+  const [one, two] = await Promise.all([send(owner, dialogue, text, key), send(owner, dialogue, text, key)]);
+  assert.deepEqual([one.status, two.status].sort(), [200, 201]);
+  assert.equal(one.value.items.length, 2);
+  assert.deepEqual(one.value.items.map(m => m.id), two.value.items.map(m => m.id));
+  await waitReplies(dialogue, 1);
+  assert.equal(packets.filter(p => p.scope.threadId === dialogue.id).length, 1);
  });
  await t.test('memory revocation is checked again; AI removal/reinvite increments the scope version',async()=>{
   const ai=(await req('/api/chat/ai',{as:owner})).value.items[0];

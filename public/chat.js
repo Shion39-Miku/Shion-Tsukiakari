@@ -1,4 +1,4 @@
-import { action, api, data, el, icon, iconButton, image, motionChoice, showStatus, site, toast, updateSite } from './ui.js';
+import { action, el, icon, iconButton, image, showStatus, site, toast, updateSite } from './ui.js';
 import * as player from './player.js';
 import { createLibrary, sectionNames } from './chat-library.js';
 import { messageView } from './chat-render.js';
@@ -12,41 +12,57 @@ const shell = document.querySelector('#app-shell'), loginStage = document.queryS
 const sidebar = document.querySelector('#app-sidebar'), header = document.querySelector('#app-header');
 const conversation = document.querySelector('#conversation'), list = document.querySelector('#message-list'), composer = document.querySelector('#composer');
 const dialog = document.querySelector('#app-dialog');
+const connectionNotice = document.querySelector('#chat-connection');
+const jumpToLatest = document.querySelector('#chat-latest');
 const panels = Object.fromEntries(['chat', 'library', 'manage', 'accounts','settings','software'].map((key) => [key, document.querySelector('#' + key + '-view')]));
 let session, threads = [], activeThread, view = 'chat', section = 'music', source, updates;
-let textarea, sendButton, fileInput, fileList, progress, composerStatus, mention;
-let selectedFiles = [], sending = false, sendKey = crypto.randomUUID(), threadPage = null, before = null;
-let routeVersion = 0, refreshTimer, readTimer, scrollFrame, adminModule, adminOwner, connected = false;
-let pendingThreadId;
-let activeSendTicket;
-const messageNodes = new Map(), pendingMessages = new Map(), inputDrafts = new Map(), uploadCache = new WeakMap();
-let installPrompt;
+let textarea, sendButton, fileInput, attachButton, fileList, progress, composerStatus, mention, stopButton, composerDraft;
+let threadPage = null, threadLimit = 50, before = null, loadingOlder = false, threadListRequest, refreshListAgain = false;
+let routeVersion = 0, accountVersion = 0, refreshTimer, activeTimer, readTimer, scrollFrame, adminModule, adminOwner;
+let connectionState = 'connecting', reconnectTimer, reconnectDelay = 1000, sessionRefresh, foregroundRequest, threadRefresh;
+let pendingThreadId, activeSendTicket;
+let messageFrame, readPending = false, catchingUp = false, newWhileReading = 0;
+let nativeHidden = false;
+const messageNodes = new Map(), messageOrder = [], pendingMessages = new Map(), inputDrafts = new Map(), generating = new Set();
 let syncingNotices = false;
 const seenNotices = new Set();
-let pageSection='profile',threadKind='all',threadQuery='',sidebarAccount;const scrollPositions=new Map();const details=document.querySelector('#conversation-details');
+let pageSection='profile',threadKind='all',threadQuery='',sidebarAccount,railProfile,headerSignature;
+const scrollPositions=new Map(), threadRows=new Map();
+const details=document.querySelector('#conversation-details');
+const windowHidden = () => document.hidden || nativeHidden;
 try{document.documentElement.dataset.density=localStorage.getItem('tsukiakari-density')||'comfortable';}catch{}
 
 async function request(path, options = {}) {
-  const requestingAccount = session?.key;
+  const version = accountVersion;
   const { json, key, ...rest } = options;
-  const response = await fetch(path, { ...rest, cache: 'no-store', headers: {
-    ...(json === undefined ? {} : { 'Content-Type': 'application/json' }), ...(key ? { 'Idempotency-Key': key } : {}),
-    ...(session?.csrf ? { 'X-CSRF-Token': session.csrf } : {}), ...rest.headers,
-  }, body: json === undefined ? rest.body : JSON.stringify(json) });
-  const result = await response.json();
-  if (!response.ok) {
-    if (response.status === 401 && !path.endsWith('/login') && session && session.key === requestingAccount) showLogin();
-    const error = new Error(result.error?.message || '连接暂时未完成，请稍后重试。'); error.status = response.status; throw error;
+  let response;
+  try {
+    response = await fetch(path, { signal: AbortSignal.timeout(45000), ...rest, cache: 'no-store', headers: {
+      ...(json === undefined ? {} : { 'Content-Type': 'application/json' }), ...(key ? { 'Idempotency-Key': key } : {}),
+      ...(session?.csrf ? { 'X-CSRF-Token': session.csrf } : {}), ...rest.headers,
+    }, body: json === undefined ? rest.body : JSON.stringify(json) });
+  } catch (error) {
+    if (rest.signal?.aborted && error.name !== 'TimeoutError') throw error;
+    throw new Error(error.name === 'TimeoutError' ? '服务响应超时，可以重试。' : '暂时无法连接服务，请检查连接后重试。');
   }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401 && result.error?.code === 'login_required' && !path.endsWith('/login') && session && version === accountVersion) showLogin();
+    const error = new Error(result.error?.message || '服务暂未完成请求，请重试。');
+    error.status = response.status;
+    error.code = result.error?.code;
+    throw error;
+  }
+  if (version !== accountVersion) throw new Error('登录会话已变更，请重试。');
   return result;
 }
 const library = createLibrary({ root: panels.library, request, account: () => session, changeSection: (next) => navigate('library', { section: next }) });
-const socialUI=createSocialUI({request,account:()=>session,dialog,openModal,openPage,openDetails,hasOpenSurface:()=>!details.hidden,currentThread:()=>activeThread,
- refresh:async()=>{await loadThreads();if(activeThread&&view==='chat')await loadThread(activeThread.id,{background:true});},
+const socialUI=createSocialUI({request,account:()=>session,dialog,openModal,openPage,openDetails,hasOpenSurface:()=>!details.hidden,currentThread:()=>activeThread,routeStamp:()=>routeVersion,
+ refresh:async()=>{await loadThreads();await refreshActiveThread();},
  onProfile:(profile)=>{if(session)session.profile=profile;drawSidebar();},openThread:(id)=>navigate('chat',{threadId:id}),
  uploadAvatar:(file,key,onProgress)=>xhrUpload({file,kind:'image'},key,onProgress,session)});
 
-const pages=createPages({request,account:()=>session,navigate,social:()=>socialUI,showAccounts,openModal});
+const pages=createPages({request,account:()=>session,navigate,social:()=>socialUI,showAccounts,openModal,connection:()=>connectionState});
 function openPage(section,title,...children){if(dialog.open)dialog.close();details.hidden=true;return navigate(['personas'].includes(section)?'software':'settings',{section,surface:{title,children}});}
 function openDetails(title,...children){const close=iconButton('close','关闭会话详情');close.onclick=()=>details.hidden=true;details.replaceChildren(el('header',{class:'details-heading'},el('h2',{},title),close),...children.flat(Infinity).filter(v=>v!==false&&v!=null));details.hidden=false;close.focus();}
 addEventListener('keydown',e=>{if(e.key==='Escape'&&!dialog.open&&!details.hidden){details.hidden=true;header.querySelector('[aria-label="查看群成员"]')?.focus();}});
@@ -72,14 +88,22 @@ function confirmModal(title, description, label, work, extra) {
 }
 
 function showLogin() {
-  pages.reset();sidebarAccount=null;document.querySelector('#app-rail').replaceChildren();details.hidden=true;socialUI.stop();if(dialog.open)dialog.close();dialog.replaceChildren();
-  source?.close(); updates?.close(); source = updates = null; connected = false;
-  session = null; activeThread = null; threads = []; messageNodes.clear(); pendingMessages.clear(); inputDrafts.clear();
-  routeVersion++; pendingThreadId = null; activeSendTicket = null; sending = false;
+  accountVersion++; routeVersion++;
+  foregroundRequest?.abort(); threadRefresh?.controller.abort(); activeSendTicket?.controller.abort();
+  threadRefresh = sessionRefresh = threadListRequest = null; refreshListAgain = false;
+  for (const timer of [refreshTimer, activeTimer, readTimer, reconnectTimer]) clearTimeout(timer);
+  refreshTimer = activeTimer = reconnectTimer = null;
+  pages.reset();sidebarAccount=railProfile=headerSignature=null;document.querySelector('#app-rail').replaceChildren();details.hidden=true;socialUI.stop();if(dialog.open)dialog.close();dialog.replaceChildren();
+  source?.close(); updates?.close(); source = updates = null;
+  connectionState = 'connecting'; reconnectDelay = 1000;
+  session = null; activeThread = null; threads = []; threadLimit = 50; threadPage = null; threadQuery = '';
+  resetTimeline(); pendingMessages.clear(); scrollPositions.clear(); threadRows.clear();
+  for (const draft of inputDrafts.values()) discardPreviews(draft.files);
+  inputDrafts.clear(); composerDraft = null;
+  pendingThreadId = null; activeSendTicket = null;
   seenNotices.clear(); syncingNotices = false;
   list.replaceChildren(); panels.accounts.replaceChildren(); adminModule?.unmountAdmin();
   shell.hidden = true; loginStage.hidden = false; closeSidebar(); player.stop(); player.setBackground(null);
-  selectedFiles.forEach((f) => f.preview && URL.revokeObjectURL(f.preview)); selectedFiles = [];
   document.querySelector('#manage-main').replaceChildren(); adminOwner = null; library.reset();
   const username = el('input', { name: 'username', autocomplete: 'username', required: true, maxlength: 40, placeholder: '你的账号', 'aria-label': '账号' });
   const password = el('input', { type: 'password', name: 'password', autocomplete: 'current-password', required: true, maxlength: 128, placeholder: '账号密码', 'aria-label': '密码' });
@@ -99,107 +123,379 @@ function showLogin() {
 }
 
 function drawRail(){
- const rail=document.querySelector('#app-rail');const brand=el('button',{class:'rail-brand',type:'button','aria-label':'月明かり · 返回聊天',title:'月明かり'},image('/assets/brand/tsukiakari-64.png','',{width:38,height:38}));brand.onclick=()=>navigate('chat');
- const nav=el('nav',{class:'app-nav','aria-label':'应用功能'});for(const[key,label,glyph]of[['chat','聊天','mail'],['library','月光庭院','moon'],...(session.role==='admin'?[['manage','网站管理','photo'],['software','软件管理','lock']]:[])]){const v=el('button',{type:'button',class:'rail-button','aria-label':label,title:label,'aria-current':view===key?'page':null},icon(glyph));v.onclick=()=>navigate(key);nav.append(v);}
- const settings=el('button',{type:'button',class:'rail-button','aria-label':'个人设置',title:'个人设置','aria-current':view==='settings'?'page':null},icon('sparkle'));settings.onclick=()=>navigate('settings',{section:'profile'});
- const profile=el('button',{type:'button',class:'rail-button rail-avatar','aria-label':'编辑个人资料',title:session.profile?.displayName||session.username},personAvatar(session.profile||{username:session.username}));profile.onclick=()=>navigate('settings',{section:'profile'});
- const logout=el('button',{class:'rail-button',type:'button','aria-label':'退出登录',title:'退出登录'},icon('back'));logout.onclick=()=>confirmModal('退出登录','聊天记录已保存，下次登录可继续。','退出登录',async()=>{await request('/api/chat/logout',{method:'POST'});showLogin();});
- rail.replaceChildren(brand,nav,el('span',{class:'rail-spacer'}),settings,profile,logout);
+  const rail = document.querySelector('#app-rail');
+  if (!rail.firstElementChild) {
+    const brand = el('button', { class: 'rail-brand', type: 'button', 'aria-label': '月明かり · 返回聊天', title: '月明かり' },
+      image('/assets/brand/tsukiakari-64.png', '', { width: 38, height: 38 }));
+    brand.onclick = () => navigate('chat');
+    const nav = el('nav', { class: 'app-nav', 'aria-label': '应用功能' });
+    const items = [['chat','聊天','mail'],['library','月光庭院','moon']];
+    if (session.role === 'admin') items.push(['manage','网站管理','photo'],['software','软件管理','lock']);
+    for (const [key, label, glyph] of items) {
+      const button = el('button', { type: 'button', class: 'rail-button', 'aria-label': label, title: label, 'data-rail-view': key }, icon(glyph));
+      button.onclick = () => navigate(key);
+      nav.append(button);
+    }
+    const settings = el('button', { type: 'button', class: 'rail-button', 'aria-label': '个人设置', title: '个人设置', 'data-rail-view': 'settings' }, icon('sparkle'));
+    settings.onclick = () => navigate('settings', { section: 'profile' });
+    const profile = el('button', { type: 'button', class: 'rail-button rail-avatar', 'aria-label': '编辑个人资料' });
+    profile.onclick = settings.onclick;
+    const logout = el('button', { class: 'rail-button', type: 'button', 'aria-label': '退出登录', title: '退出登录' }, icon('back'));
+    logout.onclick = () => confirmModal('退出登录', '下次登录可继续聊天。', '退出登录', async () => {
+      await request('/api/chat/logout', { method: 'POST' }); showLogin();
+    });
+    rail.replaceChildren(brand, nav, el('span', { class: 'rail-spacer' }), settings, profile, logout);
+  }
+  const person = session.profile || { username: session.username };
+  const signature = JSON.stringify([person.displayName, person.avatar, person.username]);
+  if (signature !== railProfile) {
+    const profile = rail.querySelector('.rail-avatar');
+    profile.title = person.displayName || person.username;
+    profile.replaceChildren(personAvatar(person));
+    railProfile = signature;
+  }
+  for (const button of rail.querySelectorAll('[data-rail-view]')) {
+    if (button.dataset.railView === view) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
 }
 function newConversation(){const choices=el('div',{class:'new-conversation-choices'});for(const[k,title,note,glyph]of[['ai','AI 对话','选择服务器上的人格，开始一段独立对话。','sparkle'],['direct','好友私聊','与已添加的好友说说近况。','mail'],['group','创建群聊','邀请同行的人，也可以邀请 AI。','heart']]){const b=action('',glyph,{'aria-label':title});b.append(el('span',{},title,el('small',{},note)));b.onclick=()=>{dialog.close();if(k==='ai'){if(session.astrbotConfigured)socialUI.aiHub();else newAiThread();}else contactDialog(k);};choices.append(b);}openModal('新建会话',choices);}
 function drawSidebar(){
  if(!session)return;drawRail();
  if(sidebarAccount!==session.key){sidebarAccount=session.key;try{threadKind=localStorage.getItem('tsukiakari-thread-kind:'+session.key)||'all';}catch{}const add=iconButton('plus','新建会话');add.onclick=newConversation;const search=el('input',{class:'thread-search','aria-label':'筛选会话',placeholder:'搜索会话…',value:threadQuery});search.oninput=()=>{threadQuery=search.value;drawThreadList();};
  const filters=el('div',{class:'conversation-filters','aria-label':'会话类型'});for(const[key,title]of[['all','全部'],['ai','AI'],['direct','好友'],['group','群聊']]){const button=action(title,undefined,{'aria-pressed':String(threadKind===key)});button.dataset.kind=key;button.onclick=()=>{threadKind=key;try{localStorage.setItem('tsukiakari-thread-kind:'+session.key,key);}catch{}drawThreadList();};filters.append(button);}
- const people=action('通讯录','heart');people.onclick=()=>socialUI.friends();const invites=action('申请与邀请','mail');invites.onclick=()=>socialUI.friends('invitations');sidebar.replaceChildren(el('div',{class:'conversation-heading'},el('div',{},el('strong',{},'月明かり'),el('small',{},'Tsukiakari')),add),search,filters,el('div',{class:'thread-list','aria-label':'会话列表'}),el('footer',{class:'sidebar-footer'},people,invites));}
+ const people=action('通讯录','heart');people.onclick=()=>socialUI.friends();const invites=action('申请与邀请','mail');invites.onclick=()=>socialUI.friends('invitations');
+ const list = el('div', { class: 'thread-list', 'aria-label': '会话列表' });
+ const more = action('载入更多会话', null, { class: 'button more-threads', hidden: true });
+ more.onclick = () => loadThreads(true).catch(error => toast(error.message, 'error'));
+ sidebar.replaceChildren(el('div',{class:'conversation-heading'},el('strong',{},'月明かり'),add),search,filters,list,more,el('footer',{class:'sidebar-footer'},people,invites));}
  drawThreadList();
 }
-function drawThreadList(){const container=sidebar.querySelector('.thread-list');if(!container)return;sidebar.querySelectorAll('[data-kind]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.kind===threadKind)));const visible=threads.filter(t=>(threadKind==='all'||t.kind===threadKind)&&t.title.toLowerCase().includes(threadQuery.toLowerCase()));container.replaceChildren(...visible.map(t=>{const kind={ai:'AI 对话',direct:'好友',group:'群聊'}[t.kind]||'会话';const b=el('button',{class:'thread-button',type:'button',title:t.title,'aria-label':t.title},el('span',{class:'thread-kind-icon kind-'+t.kind},icon(t.kind==='ai'?'sparkle':t.kind==='group'?'heart':'mail',16)),el('span',{class:'thread-copy'},el('strong',{},t.title),el('small',{},kind)),t.unread>0&&el('span',{class:'thread-unread'},t.unread>99?'99+':t.unread));b.onclick=()=>navigate('chat',{threadId:t.id});return el('div',{class:'thread-row'+(t.id===activeThread?.id&&view==='chat'?' is-active':'')},b);}));if(!visible.length)container.append(el('p',{class:'sidebar-empty'},threadQuery?'没有匹配的会话。':'这里还很安静，开始一段新的对话吧。'));if(threadPage!==null){const more=action('载入更多会话');more.onclick=()=>loadThreads(true);container.append(more);}}
-function preferences(){navigate('settings',{section:'notifications'});}
+function drawThreadList() {
+  const container = sidebar.querySelector('.thread-list');
+  if (!container) return;
+  sidebar.querySelectorAll('[data-kind]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.kind === threadKind)));
+  const query = threadQuery.trim().toLowerCase();
+  const visible = threads.filter(t => (threadKind === 'all' || t.kind === threadKind) && t.title.toLowerCase().includes(query));
+  const ids = new Set(visible.map(t => t.id));
+  for (const [id, entry] of threadRows) {
+    if (!ids.has(id)) { entry.row.remove(); threadRows.delete(id); }
+  }
+  const empty = container.querySelector('.sidebar-empty');
+  if (visible.length) empty?.remove();
+  else {
+    const copy = query ? '没有匹配的会话。' : '这里还没有对话。点击 + 开始。';
+    if (!empty) container.append(el('p', { class: 'sidebar-empty' }, copy));
+    else if (empty.textContent !== copy) empty.textContent = copy;
+  }
+  let next = container.firstElementChild;
+  for (const t of visible) {
+    let entry = threadRows.get(t.id);
+    if (!entry) {
+      const label = { ai: 'AI 对话', direct: '好友', group: '群聊' }[t.kind] || '会话';
+      const title = el('strong'), unread = el('span', { class: 'thread-unread', hidden: true });
+      const button = el('button', { class: 'thread-button', type: 'button' },
+        el('span', { class: 'thread-kind-icon kind-' + t.kind }, icon(t.kind === 'ai' ? 'sparkle' : t.kind === 'group' ? 'heart' : 'mail', 16)),
+        el('span', { class: 'thread-copy' }, title, el('small', {}, label)), unread);
+      button.onclick = () => navigate('chat', { threadId: t.id });
+      entry = { row: el('div', { class: 'thread-row' }, button), button, title, unread };
+      threadRows.set(t.id, entry);
+    }
+    const { row, button, title, unread } = entry;
+    if (title.textContent !== t.title) {
+      title.textContent = button.title = t.title;
+      button.setAttribute('aria-label', t.title);
+    }
+    const count = t.unread > 99 ? '99+' : String(t.unread || '');
+    if (unread.textContent !== count) unread.textContent = count;
+    unread.hidden = !t.unread;
+    const current = view === 'chat' && t.id === activeThread?.id;
+    row.classList.toggle('is-active', current);
+    if (current) button.setAttribute('aria-current', 'true');
+    else button.removeAttribute('aria-current');
+    if (row !== next) container.insertBefore(row, next);
+    next = row.nextElementSibling;
+  }
+  const more = sidebar.querySelector('.more-threads');
+  more.hidden = threadPage === null;
+  more.disabled = !!threadListRequest;
+}
 function drawHeader(){if(!session)return;
  const menu=iconButton('plus','展开导航',{class:'icon-button mobile-menu','aria-expanded':String(document.body.classList.contains('sidebar-open'))});menu.onclick=()=>{const open=document.body.classList.toggle('sidebar-open');sidebar.inert=!open;document.querySelector('#sidebar-shade').hidden=!open;};
- const t=activeThread,ai=t?.members?.find(m=>m.kind==='ai'),friend=t?.kind==='direct'?t.members.find(m=>m.key!==session.key):null,kind=t?.kind||'ai';const labels={ai:'AI',direct:'好友',group:'群聊'};
- let title=view==='chat'?(kind==='ai'?ai?.displayName||session.assistantName||'AI 对话':friend?.displayName||t?.title||'聊天'):view==='library'?sectionNames[section]:view==='manage'?'詩音の月光庭院 · 网站管理':view==='software'?'月明かり · 软件管理':'个人设置';
+ const t=activeThread,ai=t?.members?.find(m=>m.kind==='ai'),friend=t?.kind==='direct'?t.members?.find(m=>m.key!==session.key):null,kind=t?.kind;const labels={ai:'AI',direct:'好友',group:'群聊'};
+ const title=view==='chat'?(kind==='ai'?ai?.displayName||session.assistantName||'AI 对话':friend?.displayName||t?.title||'聊天'):view==='library'?sectionNames[section]:view==='manage'?'詩音の月光庭院 · 网站管理':view==='software'?'月明かり · 软件管理':'个人设置';
  const statusNames={online:'在线',away:'离开',busy:'忙碌',invisible:'离线',offline:'离线'};
- const note=view==='chat'?(kind==='group'?t.members.length+' 位成员 · 邀请制':kind==='direct'?(statusNames[friend?.status]||'离线')+' · 好友私聊':ai?.enabled===false?'人格已停用，请重新选择':connected?'已连接 · '+(t?.title||'独立 AI 对话'):'连接中断 · 正在重连'):view==='manage'?'网站内容 · 草稿保存 · 确认同步':view==='software'?(managementSections[pageSection]||'软件概览'):(personalSections[pageSection]||sectionNames[section]||'');
+ const note=view==='chat'?(pendingThreadId?'正在打开会话…':kind==='group'?(t.members?.length||1)+' 位成员 · 邀请制':kind==='direct'?(statusNames[friend?.status]||'离线')+' · 好友私聊':ai?.enabled===false?'人格已停用，请重新选择':kind=== 'ai'?(t.title||'独立 AI 对话'):'选中一段对话，或开始新的聊天。'):view==='manage'?'草稿保存与确认同步':view==='software'?(managementSections[pageSection]||'软件概览'):view==='settings'?(personalSections[pageSection]||''):'已同步的庭院收藏';
+ const signature = JSON.stringify([view, t?.id, kind, t?.owner, title, note]);
+ if (signature === headerSignature) return;
+ headerSignature = signature;
  const actions=el('div',{class:'app-header-actions'});if(view==='chat'&&t){if(kind==='group'){const members=iconButton('heart','查看群成员');members.onclick=groupMembers;actions.append(members);}const more=iconButton('down','会话操作');more.onclick=()=>{const controls=el('div',{class:'conversation-menu'});if(kind!=='direct'){const choose=action(kind==='group'?'邀请AI入群':'选择AI人格','sparkle');choose.onclick=()=>socialUI.aiHub(t.id);controls.append(choose);}if(t.owner===session.key&&kind!=='direct'){const rename=action('重命名对话');rename.onclick=renameThread;controls.append(rename);}const remove=action(kind==='group'?(t.owner===session.key?'解散群聊':'退出群聊'):'移除对话','trash');remove.onclick=removeThread;controls.append(remove);openModal('会话操作',controls);};actions.append(more);}
  if(view!=='chat'){const back=action('返回聊天','back',{class:'button header-back'});back.onclick=()=>navigate('chat');actions.append(back);}
- header.replaceChildren(el('div',{class:'app-header-title'},view==='chat'&&menu,el('div',{class:'app-header-copy'},el('h1',{title},title),el('small',{},view==='chat'&&el('span',{class:'header-identity kind-'+kind},labels[kind]),view==='chat'&&el('span',{class:'presence-dot'+(connected?'':' offline')}),note))),actions);
+ header.replaceChildren(el('div',{class:'app-header-title'},view==='chat'&&menu,el('div',{class:'app-header-copy'},el('h1',{title},title),el('small',{},view==='chat'&&kind&&el('span',{class:'header-identity kind-'+kind},labels[kind]),note))),actions);
 }
 
 async function loadThreads(more = false) {
   if (!session) return;
-  const owner = session.key;
-  const result = await request('/api/chat/threads' + (more && threadPage !== null ? '?offset=' + threadPage : ''));
-  if (session?.key !== owner) return;
-  threads = more ? [...threads, ...result.items.filter((r) => !threads.some((t) => t.id === r.id))] : result.items; threadPage = result.nextOffset; drawSidebar();
-  socialUI.updateBadge(threads,result.totalUnread);
+  if (threadListRequest) {
+    refreshListAgain ||= !more;
+    return threadListRequest;
+  }
+  const version = accountVersion;
+  const limit = more && threadPage !== null ? threadPage + 50 : threadLimit;
+  const job = (async () => {
+    const merged = new Map();
+    let next = 0, unread;
+    while (next !== null && next < limit) {
+      const result = await request('/api/chat/threads?offset=' + next + '&limit=' + Math.min(300, limit - next));
+      if (version !== accountVersion) return;
+      for (const item of result.items) merged.set(item.id, item);
+      next = result.nextOffset;
+      unread = result.totalUnread;
+    }
+    threads = [...merged.values()];
+    threadLimit = limit;
+    threadPage = next;
+    if (!windowHidden()) drawSidebar();
+    socialUI.updateBadge(threads, unread);
+  })();
+  threadListRequest = job;
+  const moreButton = sidebar.querySelector('.more-threads');
+  if (moreButton) moreButton.disabled = true;
+  try { await job; }
+  finally {
+    if (threadListRequest === job) {
+      threadListRequest = null;
+      if (moreButton) moreButton.disabled = false;
+      if (refreshListAgain) { refreshListAgain = false; scheduleThreads(); }
+    }
+  }
 }
-function scheduleThreads() { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => loadThreads().catch(() => {}), 180); }
-function isGenerating() { return [...messageNodes.values()].some((node) => node.data.status === 'generating' && node.data.metadata?.requestedBy === session?.key); }
-function scrollToBottom() { if (scrollFrame) return; scrollFrame = requestAnimationFrame(() => { scrollFrame = null; conversation.scrollTop = conversation.scrollHeight; }); }
+function scheduleThreads() {
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => { refreshTimer = null; loadThreads().catch(() => {}); }, 180);
+}
+function atLatest() {
+  return conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 96;
+}
+function updateLatestButton() {
+  const pinned = atLatest();
+  if (pinned) newWhileReading = 0;
+  jumpToLatest.hidden = pinned || !messageOrder.length || view !== 'chat';
+  const copy = newWhileReading ? '查看新消息（' + newWhileReading + '）' : '回到最新';
+  if (jumpToLatest.textContent !== copy) jumpToLatest.textContent = copy;
+}
+function scrollToBottom() {
+  if (scrollFrame || windowHidden() || view !== 'chat') return;
+  const id = activeThread?.id;
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = null;
+    if (windowHidden() || view !== 'chat' || activeThread?.id !== id) return;
+    conversation.scrollTop = conversation.scrollHeight;
+    updateLatestButton();
+    markRead();
+  });
+}
+jumpToLatest.onclick = scrollToBottom;
+conversation.addEventListener('scroll', () => {
+  updateLatestButton();
+  if (atLatest()) markRead();
+}, { passive: true });
 function markRead() {
-  clearTimeout(readTimer); if (!activeThread || view !== 'chat' || document.hidden || !document.hasFocus() || !session) return;
-  const id = activeThread.id; readTimer = setTimeout(() => request('/api/chat/threads/' + id + '/read', { method: 'POST' }).then(scheduleThreads).catch(() => {}), 350);
+  clearTimeout(readTimer);
+  if (!readPending || catchingUp || !activeThread || pendingThreadId || view !== 'chat' || windowHidden() || !document.hasFocus() || !atLatest()) return;
+  const id = activeThread.id, version = routeVersion;
+  readTimer = setTimeout(async () => {
+    if (routeVersion !== version || pendingThreadId || windowHidden() || !document.hasFocus() || !atLatest()) return;
+    const through = messageOrder.at(-1);
+    if (!through) return;
+    readPending = false;
+    try { await request('/api/chat/threads/' + id + '/read?through=' + through, { method: 'POST' }); }
+    catch { if (routeVersion === version) readPending = true; }
+  }, 250);
 }
-const renderHandlers = { account: () => session, request, showSection: (section) => navigate('library', { section }), setInput: (text) => { textarea.value = text; textarea.focus(); fitInput(); }, retry: async (item) => {
-  try { await request('/api/chat/threads/' + activeThread.id + '/retry', { method: 'POST', json: { messageId: item.id } }); } catch (error) { toast(error.message, 'error'); }
-}, confirmAction };
+function resetTimeline() {
+  messageNodes.clear(); messageOrder.length = 0; generating.clear();
+  before = null; loadingOlder = false; readPending = false; catchingUp = false; newWhileReading = 0;
+  cancelAnimationFrame(scrollFrame); scrollFrame = null;
+  cancelAnimationFrame(messageFrame); messageFrame = null;
+  list.replaceChildren(); jumpToLatest.hidden = true;
+}
+const renderHandlers = {
+  account: () => session, request, showSection: section => navigate('library', { section }), setInput,
+  retry: async item => {
+    const id = activeThread?.id;
+    try { await request('/api/chat/threads/' + id + '/retry', { method: 'POST', json: { messageId: item.id } }); }
+    catch (error) { toast(error.message, 'error'); }
+  },
+  confirmAction,
+};
 function upsert(item) {
-  if (!session) return;
   const previous = messageNodes.get(item.id);
-  if (previous && (previous.data.updatedAt > item.updatedAt || previous.data.updatedAt === item.updatedAt && previous.data.status === 'complete' && item.status === 'generating')) return;
-  if (previous) { previous.data = item; previous.view.update(item); }
-  else {
+  if (previous) {
+    const old = previous.data;
+    if (old.updatedAt > item.updatedAt || old.updatedAt === item.updatedAt && old.status === 'complete' && item.status === 'generating') return false;
+    if (old.updatedAt === item.updatedAt && old.status === item.status && old.body === item.body && old.senderName === item.senderName && old.senderAvatar === item.senderAvatar) return false;
+    previous.data = item;
+    previous.view.update(item);
+  } else {
     list.querySelector('.conversation-welcome')?.remove();
     const rendered = messageView(item, renderHandlers); messageNodes.set(item.id, { data: item, view: rendered });
-    const next = [...list.querySelectorAll('[data-message-id]')].find((n) => Number(n.dataset.messageId) > item.id); list.insertBefore(rendered.node, next || null);
+    let low = 0, high = messageOrder.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (messageOrder[middle] < item.id) low = middle + 1;
+      else high = middle;
+    }
+    const next = messageNodes.get(messageOrder[low]);
+    messageOrder.splice(low, 0, item.id);
+    list.insertBefore(rendered.node, next?.view.node || null);
   }
-  reflectComposer();
+  if (item.status === 'generating' && item.metadata?.requestedBy === session.key) generating.add(item.id);
+  else generating.delete(item.id);
+  if (item.status === 'complete' && item.senderKey !== session.key) readPending = true;
+  return true;
 }
-function queueMessage(item) {
-  pendingMessages.set(item.id, item);
-  if (queueMessage.frame) return;
-  queueMessage.frame = requestAnimationFrame(() => {
-    queueMessage.frame = null; const nearBottom = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 180;
-    for (const value of pendingMessages.values()) upsert(value); pendingMessages.clear();
-    if (nearBottom && view === 'chat') scrollToBottom(); markRead();
+function applyMessages(items, { follow = true } = {}) {
+  if (!items.length) return;
+  const pinned = follow && atLatest();
+  let changed = false;
+  for (const item of items) {
+    const fresh = !messageNodes.has(item.id);
+    if (!upsert(item)) continue;
+    changed = true;
+    if (follow && !pinned && fresh && item.senderKey !== session.key) newWhileReading++;
+  }
+  if (!changed) return;
+  reflectComposer();
+  if (pinned) scrollToBottom();
+  else updateLatestButton();
+  markRead();
+}
+function flushMessageQueue() {
+  if (messageFrame || view !== 'chat' || windowHidden() || !pendingMessages.size) return;
+  messageFrame = requestAnimationFrame(() => {
+    messageFrame = null;
+    if (view !== 'chat' || windowHidden() || !session || pendingThreadId) return;
+    const items = [];
+    for (const { threadId, item } of pendingMessages.values()) if (threadId === activeThread?.id) items.push(item);
+    pendingMessages.clear();
+    applyMessages(items);
   });
+}
+function queueMessage(value) {
+  // Hidden windows reconcile from SQLite when restored. Keep notifications and unread counts live.
+  if (view !== 'chat' || windowHidden()) return;
+  if (value.threadId !== activeThread?.id && value.threadId !== pendingThreadId) return;
+  const pending = pendingMessages.get(value.item.id);
+  if (!pending || pending.item.updatedAt <= value.item.updatedAt) pendingMessages.set(value.item.id, value);
+  flushMessageQueue();
 }
 function welcome() {
   const prompts = activeThread && activeThread.kind !== 'ai' ? [] : [['music', '听一首歌', '查看音乐'], ['moon', '逛逛庭院', '查看首页'], ['mail', '聊聊今天', '今天想和你聊一会儿。']];
   list.replaceChildren(el('div', { class: 'conversation-welcome' }, el('div', { class: 'welcome-symbol' }, icon(activeThread?.kind === 'group' ? 'heart' : 'sparkle', 35)),
-    el('p', { class: 'eyebrow' }, 'SOMEWHERE, UNDER THE SAME STARS'), el('h2', {}, activeThread?.kind === 'direct' ? '从一句「在吗」开始。' : activeThread?.kind === 'group' ? '把相逢，留在这里。' : '今晚，想聊些什么？'),
+    el('h2', {}, activeThread?.kind === 'direct' ? '从一句问候开始。' : activeThread?.kind === 'group' ? '把相逢，留在这里。' : '今晚，想聊些什么？'),
     el('p', {}, activeThread?.kind==='ai'&&activeThread.members?.find(m=>m.kind==='ai')?.greeting || (activeThread && activeThread.kind !== 'ai' ? '消息仅对本会话成员可见。聊天记录会为你妥善保存。' : '说说今天的心情，听一首熟悉的歌，或照看月光下的庭院。')),
-    el('div', { class: 'welcome-prompts' }, prompts.map(([glyph, label, value]) => { const button = action(label, glyph); button.onclick = () => { textarea.value = value; textarea.focus(); fitInput(); }; return button; }))));
+    el('div', { class: 'welcome-prompts' }, prompts.map(([glyph, label, value]) => { const button = action(label, glyph); button.onclick = () => setInput(value); return button; }))));
 }
-async function loadThread(id, { older = false, background = false } = {}) {
-  if (background && pendingThreadId) return;
-  const version = ++routeVersion, previousId = activeThread?.id;
-  if (!older && textarea) inputDrafts.set(previousId || '', textarea.value);if(previousId&&previousId!==id)scrollPositions.set(previousId,conversation.scrollTop);
-  if (previousId !== id) { pendingThreadId = id; reflectComposer(); }
-  let result;
-  try { result = await request('/api/chat/threads/' + id + (older && before ? '?before=' + before : '')); }
-  catch (error) { if (version === routeVersion) { pendingThreadId = null; reflectComposer(); } throw error; }
-  if (version !== routeVersion || !session) return;
-  pendingThreadId = null;
-  const changed = previousId !== id, oldHeight = conversation.scrollHeight;
-  activeThread = result.item; before = result.before;
-  if (changed) { messageNodes.clear(); pendingMessages.clear(); list.replaceChildren(); let saved='';try{saved=localStorage.getItem('chat-input:'+session.key+':'+id)||'';}catch{} textarea.value = inputDrafts.get(id) ?? saved; clearFiles(); sendKey = crypto.randomUUID(); }
-  list.querySelector('.load-older')?.remove();
-  if (before) { const more = action('查看更早的消息', null, { class: 'button load-older' }); more.onclick = () => loadThread(id, { older: true }); list.prepend(more); }
-  for (const item of result.messages) upsert(item);
-  if (!messageNodes.size) welcome();
-  drawHeader(); drawSidebar(); reflectComposer();
-  if (older) requestAnimationFrame(() => { conversation.scrollTop += conversation.scrollHeight - oldHeight; });
-  else if (changed) {if(scrollPositions.has(id))requestAnimationFrame(()=>conversation.scrollTop=scrollPositions.get(id));else scrollToBottom();}
-  markRead();
+function updateOlderButton() {
+  let button = list.querySelector('.load-older');
+  if (!before) { button?.remove(); return; }
+  if (!button) {
+    button = action('查看更早的消息', null, { class: 'button load-older' });
+    button.onclick = loadOlder;
+    list.prepend(button);
+  }
+  button.disabled = loadingOlder;
+  const copy = loadingOlder ? '正在读取…' : '查看更早的消息';
+  if (button.textContent !== copy) button.textContent = copy;
+}
+async function loadOlder() {
+  if (!before || loadingOlder || pendingThreadId || !activeThread) return;
+  const id = activeThread.id, version = routeVersion;
+  loadingOlder = true; updateOlderButton();
+  try {
+    const result = await request('/api/chat/threads/' + id + '?before=' + before);
+    if (version !== routeVersion || id !== activeThread?.id) return;
+    const oldHeight = conversation.scrollHeight;
+    before = result.before;
+    applyMessages(result.messages, { follow: false });
+    updateOlderButton();
+    conversation.scrollTop += conversation.scrollHeight - oldHeight;
+  } catch (error) {
+    if (version === routeVersion) toast(error.message, 'error');
+  } finally {
+    if (id === activeThread?.id) { loadingOlder = false; updateOlderButton(); }
+  }
+}
+async function loadThread(id, { signal, version = routeVersion } = {}) {
+  const result = await request('/api/chat/threads/' + id, { signal: signal || AbortSignal.timeout(20000) });
+  if (version !== routeVersion || signal?.aborted || !session) return;
+  const changed = activeThread?.id !== id;
+  activeThread = result.item;
+  if (changed) {
+    resetTimeline();
+    before = result.before;
+    restoreDraft(id);
+  }
+  applyMessages(result.messages, { follow: !changed });
+  updateOlderButton();
+  if (!messageNodes.size && !list.firstElementChild) welcome();
+  if (changed && view === 'chat') {
+    const position = scrollPositions.get(id);
+    if (position !== undefined) requestAnimationFrame(() => {
+      if (version === routeVersion) conversation.scrollTop = position;
+    });
+    else scrollToBottom();
+  }
+}
+async function refreshActiveThread() {
+  if (!session || view !== 'chat' || windowHidden() || !activeThread || pendingThreadId || threadRefresh) return;
+  const id = activeThread.id, version = routeVersion, known = messageOrder.at(-1);
+  const controller = new AbortController();
+  const job = { controller };
+  threadRefresh = job; catchingUp = true;
+  const valid = () => version === routeVersion && id === activeThread?.id && !controller.signal.aborted && !windowHidden();
+  const path = '/api/chat/threads/' + id;
+  const options = { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]) };
+  try {
+    const result = await request(path, options);
+    if (!valid()) return;
+    // If more than one page arrived while offline, fill the gap before applying the latest snapshot.
+    const first = result.messages[0]?.id;
+    let after = known;
+    while (after && result.before && after < first) {
+      const batch = await request(path + '?after=' + after, options);
+      if (!valid()) return;
+      applyMessages(batch.messages);
+      after = batch.nextAfter;
+    }
+    activeThread = result.item;
+    applyMessages(result.messages);
+    drawHeader();
+  } catch (error) {
+    if (valid() && error.status === 404) forgetThread(id);
+  } finally {
+    if (threadRefresh === job) {
+      threadRefresh = null;
+      catchingUp = false;
+      markRead();
+    }
+  }
+}
+function scheduleActiveRefresh() {
+  if (activeTimer || view !== 'chat' || windowHidden()) return;
+  activeTimer = setTimeout(() => { activeTimer = null; void refreshActiveThread(); }, 180);
 }
 async function newAiThread() {
   if (pendingThreadId) return;
+  const version = routeVersion;
   pendingThreadId = 'creating'; reflectComposer();
-  try { const result = await request('/api/chat/threads', { method: 'POST', json: {}, key: crypto.randomUUID() }); await loadThreads(); await navigate('chat', { threadId: result.item.id }); }
-  catch (error) { pendingThreadId = null; reflectComposer(); toast(error.message, 'error'); }
+  try {
+    const result = await request('/api/chat/threads', { method: 'POST', json: {}, key: crypto.randomUUID() });
+    scheduleThreads();
+    if (version === routeVersion) await navigate('chat', { threadId: result.item.id });
+  } catch (error) { toast(error.message, 'error'); }
+  finally { if (version === routeVersion) { pendingThreadId = null; reflectComposer(); } }
 }
 async function contactDialog(kind, editing = false) {
   try {
@@ -213,15 +509,22 @@ async function contactDialog(kind, editing = false) {
     }));
     const status = el('p', { class: 'inline-status', role: 'status' });
     const start = action(editing ? '保存成员' : kind === 'direct' ? '开始私聊' : '创建群聊', 'check', { class: 'button button-primary' });
-    start.onclick = async () => { start.disabled = true; pendingThreadId = 'creating'; reflectComposer(); try {
+    let lastCreation;
+    start.onclick = async () => { if (start.disabled) return; start.disabled = true; const version = routeVersion; try {
       let id = activeThread?.id;
       if (editing) await request('/api/chat/threads/' + id + '/members', { method: 'PUT', json: { members: [...selected] } });
-      else { const result = await request('/api/chat/threads', { method: 'POST', json: { kind, title: kind === 'group' ? title.value.trim() || '星夜小聚' : '私聊', members: [...selected] }, key: crypto.randomUUID() }); id = result.item.id; }
-      await loadThreads(); await navigate('chat', { threadId: id }); dialog.close();
-    } catch (error) { pendingThreadId = null; reflectComposer(); showStatus(status, error.message, 'error'); } finally { start.disabled = false; } };
+      else {
+        const json = { kind, title: kind === 'group' ? title.value.trim() || '星夜小聚' : '私聊', members: [...selected].sort() };
+        const body = JSON.stringify(json);
+        if (lastCreation?.body !== body) lastCreation = { body, key: crypto.randomUUID() };
+        const result = await request('/api/chat/threads', { method: 'POST', json, key: lastCreation.key }); id = result.item.id;
+      }
+      scheduleThreads();
+      if (version === routeVersion && dialog.contains(start)) { dialog.close(); await navigate('chat', { threadId: id }); }
+    } catch (error) { showStatus(status, error.message, 'error'); } finally { start.disabled = false; } };
     openModal(editing ? '管理群成员' : kind === 'direct' ? '发起私聊' : '创建群聊', kind === 'group' && !editing && el('label', { class: 'field' }, el('span', {}, '群聊名称'), title),
       el('p', {}, editing ? '新增成员将收到邀请，取消勾选可移出群聊。' : kind === 'group' ? '可以先创建群聊；勾选的好友会收到邀请，接受后才加入。' : '选择一位已添加的好友。'), options,
-      !items.length && el('p', {}, '好友列表为空。可在「好友」中通过ID或账号搜索并申请。'), status, el('footer', { class: 'dialog-footer' }, start));
+      !items.length && el('p', {}, '还没有好友。可在通讯录搜索用户并发送申请。'), status, el('footer', { class: 'dialog-footer' }, start));
   } catch (error) { toast(error.message, 'error'); }
 }
 function groupMembers() {
@@ -234,98 +537,236 @@ function renameThread() {
 function removeThread() {
   const thread = activeThread; const label = thread.kind === 'group' ? thread.owner === session.key ? '解散群聊' : '退出群聊' : '移除对话';
   confirmModal(label, thread.kind === 'direct' ? '仅从你的列表中隐藏；对方发送新消息后会重新出现。' : thread.kind === 'group' && thread.owner === session.key ? '解散后，所有成员将无法再访问本群消息。' : '确认处理这段对话？', label, async () => {
-    await request('/api/chat/threads/' + thread.id, { method: 'DELETE' }); activeThread = null; messageNodes.clear(); welcome(); await loadThreads(); await navigate('chat');
+    await request('/api/chat/threads/' + thread.id, { method: 'DELETE' }); forgetThread(thread.id); scheduleThreads();
   });
 }
 
-function fitInput() { if (!textarea) return; textarea.style.height = 'auto'; textarea.style.height = Math.min(160, textarea.scrollHeight) + 'px'; }
-function clearFiles() { selectedFiles.forEach((entry) => entry.preview && URL.revokeObjectURL(entry.preview)); selectedFiles = []; if (fileInput) fileInput.value = ''; drawFiles(); }
+function fitInput() {
+  if (!textarea || view !== 'chat') return;
+  textarea.style.height = 'auto';
+  textarea.style.height = Math.min(160, textarea.scrollHeight) + 'px';
+}
+function discardPreviews(files) {
+  for (const entry of files) if (entry.preview) URL.revokeObjectURL(entry.preview);
+}
+function draftStorage(id) { return 'chat-input:' + session.key + ':' + id; }
+function saveDraft(draft) {
+  try {
+    if (draft.text) localStorage.setItem(draftStorage(draft.id), draft.text);
+    else localStorage.removeItem(draftStorage(draft.id));
+  } catch { /* The draft remains available in this window. */ }
+}
+function restoreDraft(id = '') {
+  let draft = inputDrafts.get(id);
+  if (!draft) {
+    let text = '';
+    try { text = localStorage.getItem(draftStorage(id)) || ''; } catch {}
+    draft = { id, text, files: [], mention: false, key: crypto.randomUUID(), error: '', progress: null };
+    inputDrafts.set(id, draft);
+  }
+  composerDraft = draft;
+  textarea.value = draft.text;
+  mention.checked = draft.mention;
+  fileInput.value = '';
+  drawFiles();
+  drawUploadProgress();
+  fitInput();
+  reflectComposer();
+}
+function setInput(text) {
+  if (!composerDraft || pendingThreadId || activeSendTicket?.draft === composerDraft) return;
+  textarea.value = text;
+  composerDraft.text = text;
+  composerDraft.key = crypto.randomUUID();
+  composerDraft.error = '';
+  saveDraft(composerDraft);
+  fitInput();
+  reflectComposer();
+}
 function drawFiles() {
-  if (!fileList) return;
-  fileList.replaceChildren(...selectedFiles.map((entry, index) => {
-    const remove = iconButton('close', '移除附件 ' + entry.file.name); remove.onclick = () => { if (entry.preview) URL.revokeObjectURL(entry.preview); selectedFiles.splice(index, 1); sendKey = crypto.randomUUID(); drawFiles(); };
+  const draft = composerDraft;
+  fileList.replaceChildren(...draft.files.map((entry, index) => {
+    const remove = iconButton('close', '移除附件 ' + entry.file.name);
+    remove.onclick = () => {
+      if (draft !== composerDraft || activeSendTicket?.draft === draft) return;
+      discardPreviews([entry]); draft.files.splice(index, 1);
+      draft.key = crypto.randomUUID(); draft.error = '';
+      drawFiles(); reflectComposer();
+    };
     return el('div', { class: 'chat-attachment' }, entry.preview ? image(entry.preview, '', { width: 30, height: 30 }) : icon(entry.kind === 'audio' ? 'music' : 'mail', 15), el('span', {}, entry.file.name), remove);
   }));
 }
 function reflectComposer() {
-  if (!sendButton) return;
-  const generating = isGenerating()&&!textarea?.value.trim(); sendButton.disabled = sending || Boolean(pendingThreadId);
-  textarea.disabled = sending || Boolean(pendingThreadId);
-  sendButton.replaceChildren(icon(generating ? 'stop' : 'upload', 15), generating ? '停止回复' : sending ? '发送中' : '发送');
-  sendButton.setAttribute('aria-label', generating ? '停止回复' : '发送消息');
-  mention?.closest('label')?.toggleAttribute('hidden', !activeThread || activeThread.kind === 'ai');
-  textarea.placeholder = activeThread && activeThread.kind !== 'ai' ? '写一条消息，和此刻的他们分享…' : '写下想说的话，或输入「查看音乐」…';
+  if (!composerDraft) return;
+  const ownSend = activeSendTicket?.draft === composerDraft;
+  const locked = Boolean(ownSend || pendingThreadId);
+  sendButton.disabled = Boolean(activeSendTicket || pendingThreadId || (!textarea.value.trim() && !composerDraft.files.length));
+  textarea.disabled = fileInput.disabled = attachButton.disabled = mention.disabled = locked;
+  const copy = ownSend ? '发送中' : '发送';
+  if (sendButton.lastChild.textContent !== copy) sendButton.lastChild.textContent = copy;
+  const allowMention = activeThread?.kind === 'group' && !session.astrbotConfigured && session.aiReady;
+  mention.closest('label').hidden = !allowMention;
+  const textHint = activeThread?.kind === 'direct' ? '给好友写条消息…' : activeThread?.kind === 'group' ? '给群里写条消息…' : '写下想说的话，或输入「查看音乐」…';
+  if (textarea.placeholder !== textHint) textarea.placeholder = textHint;
+  stopButton.hidden = !generating.size;
+  const status = composerDraft.error || (pendingThreadId ? '正在打开会话…' : activeSendTicket && !ownSend ? '另一段对话正在发送，可继续编辑。' : '');
+  if (composerStatus.textContent !== status) composerStatus.textContent = status;
+  composerStatus.classList.toggle('has-error', Boolean(composerDraft.error));
 }
 function buildComposer() {
   textarea = el('textarea', { rows: 1, maxlength: 8000, 'aria-label': '聊天消息', placeholder: '写下想说的话…' });
-  textarea.oninput = () => { fitInput(); sendKey = crypto.randomUUID();reflectComposer();try{localStorage.setItem('chat-input:'+session.key+':'+(activeThread?.id||''),textarea.value);}catch{} };
-  textarea.onkeydown = (event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (textarea.value.trim()) composer.requestSubmit(); } };
+  textarea.oninput = () => {
+    composerDraft.text = textarea.value;
+    composerDraft.key = crypto.randomUUID();
+    composerDraft.error = '';
+    saveDraft(composerDraft);
+    const pinned = atLatest();
+    fitInput();
+    if (pinned) scrollToBottom();
+    reflectComposer();
+  };
+  textarea.onkeydown = event => {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    if (!event.repeat && !sendButton.disabled) composer.requestSubmit();
+  };
   fileInput = el('input', { type: 'file', multiple: true, accept: '.png,.jpg,.jpeg,.webp,.mp3,.wav,.ogg,.opus,.lrc,.txt', hidden: true, 'aria-label': '选择聊天附件' });
   fileInput.onchange = () => {
     const entries = [...fileInput.files];
+    const draft = composerDraft;
+    if (activeSendTicket?.draft === draft || pendingThreadId) return;
     try {
-      if (selectedFiles.length + entries.length > 8) throw new Error('单条消息最多 8 个附件。');
+      if (draft.files.length + entries.length > 8) throw new Error('单条消息最多 8 个附件。');
       const prepared = entries.map((file) => { const suffix = file.name.split('.').at(-1).toLowerCase(), kind = ['wav', 'mp3', 'ogg', 'opus'].includes(suffix) ? 'audio' : ['lrc', 'txt'].includes(suffix) ? 'lyrics' : ['png', 'jpg', 'jpeg', 'webp'].includes(suffix) ? 'image' : null;
         if (!kind || !file.size || file.size > (kind === 'audio' ? 100_000_000 : kind === 'lyrics' ? 65536 : 8 * 1024 * 1024)) throw new Error(file.name + '：音频最大 100,000,000 字节；图片最大 8 MiB；LRC/TXT 最大 64 KiB。');
         return { file, kind, preview: null };
       });
       for (const entry of prepared) if (entry.kind === 'image') entry.preview = URL.createObjectURL(entry.file);
-      selectedFiles.push(...prepared); sendKey = crypto.randomUUID(); drawFiles();
-    } catch (error) { fileInput.value = ''; toast(error.message, 'error'); }
+      draft.files.push(...prepared); draft.key = crypto.randomUUID(); draft.error = '';
+      drawFiles(); reflectComposer();
+    } catch (error) { toast(error.message, 'error'); }
+    finally { fileInput.value = ''; }
   };
-  const attach = iconButton('plus', '添加附件'); attach.onclick = () => fileInput.click();
-  const help = iconButton('sparkle', '查看助理指令'); help.onclick = () => { textarea.value = '/帮助'; textarea.focus(); fitInput(); };
+  attachButton = iconButton('plus', '添加附件'); attachButton.onclick = () => fileInput.click();
+  const help = iconButton('sparkle', '查看助理指令');
+  help.onclick = () => openModal('助理指令', el('p', {}, '输入「查看音乐」「查看游戏」「查看猫猫图」，或用「播放 歌名」寻找歌曲。'),
+    session.role === 'admin' && el('p', {}, '网站管理指令可在 AI 私聊中使用。输入 /帮助 可查看完整列表。'));
   mention = el('input', { type: 'checkbox', name: 'mentionAssistant' });
+  mention.onchange = () => { composerDraft.mention = mention.checked; composerDraft.key = crypto.randomUUID(); };
   sendButton = action('发送', 'upload', { type: 'submit', class: 'button send-button', 'aria-label': '发送消息' });
-  fileList = el('div', { class: 'composer-files' }); progress = el('div', { class: 'composer-progress', role: 'status' }); composerStatus = el('span');
-  composer.replaceChildren(el('div', { class: 'composer-box' }, textarea, fileList, progress, el('div', { class: 'composer-toolbar' }, el('div', { class: 'composer-tools' }, attach, help, fileInput, el('small', {}, '图片 · 音频 · LRC'), el('label', { class: 'mention-option', hidden: true }, mention, '@助理')), sendButton)),
+  stopButton = action('停止回复', 'stop', { class: 'button stop-reply', hidden: true });
+  stopButton.onclick = async () => {
+    const id = activeThread?.id;
+    if (!id || stopButton.disabled || pendingThreadId) return;
+    stopButton.disabled = true;
+    try { await request('/api/chat/threads/' + id + '/stop', { method: 'POST' }); }
+    catch (error) { toast(error.message, 'error'); }
+    finally { stopButton.disabled = false; }
+  };
+  fileList = el('div', { class: 'composer-files' }); progress = el('div', { class: 'composer-progress', role: 'status' }); composerStatus = el('span', { class: 'composer-status', role: 'status' });
+  composer.replaceChildren(el('div', { class: 'composer-box' }, textarea, fileList, progress, el('div', { class: 'composer-toolbar' },
+    el('div', { class: 'composer-tools' }, attachButton, help, fileInput, el('label', { class: 'mention-option', hidden: true }, mention, '请助理回复')),
+    el('div', { class: 'composer-actions' }, stopButton, sendButton))),
     el('div', { class: 'composer-note' }, composerStatus, el('span', {}, 'Enter 发送 · Shift + Enter 换行')));
-  composerStatus.textContent = '消息仅对会话成员可见。';
   composer.onsubmit = sendMessage;
+  restoreDraft();
 }
-function xhrUpload(entry, key, onProgress, actor) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const form = new FormData(); form.set('kind', entry.kind); form.set('file', entry.file);
-      const encoded = new Request(location.origin + '/api/chat/files', { method: 'POST', body: form }); const blob = await encoded.blob();
-      if (session?.key !== actor.key) throw new Error('账号已变更，本次上传已停止。');
-      const xhr = new XMLHttpRequest(); xhr.open('POST', '/api/chat/files'); xhr.responseType = 'json'; xhr.timeout = 900_000;
-      xhr.setRequestHeader('Content-Type', encoded.headers.get('Content-Type')); xhr.setRequestHeader('X-CSRF-Token', actor.csrf); xhr.setRequestHeader('Idempotency-Key', key);
-      xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(event.loaded, event.total, false); }; xhr.upload.onload = () => onProgress(blob.size, blob.size, true);
-      xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve(xhr.response.item) : reject(new Error(xhr.response?.error?.message || '文件未保存，请保留输入后重试。'));
-      xhr.onerror = xhr.ontimeout = () => reject(new Error('文件传输中断，输入和附件已保留。')); xhr.send(blob);
-    } catch (error) { reject(error); }
+function xhrUpload(entry, key, onProgress, actor, signal) {
+  return new Promise((resolve, reject) => {
+    if (session?.csrf !== actor.csrf || signal?.aborted) { reject(new Error('账号已变更，本次上传已停止。')); return; }
+    const form = new FormData(); form.set('kind', entry.kind); form.set('file', entry.file);
+    const xhr = new XMLHttpRequest();
+    const abort = () => xhr.abort();
+    xhr.open('POST', '/api/chat/files');
+    xhr.responseType = 'json'; xhr.timeout = 900_000;
+    xhr.setRequestHeader('X-CSRF-Token', actor.csrf);
+    xhr.setRequestHeader('Idempotency-Key', key);
+    xhr.upload.onprogress = event => { if (event.lengthComputable) onProgress(event.loaded, event.total, false); };
+    xhr.upload.onload = () => onProgress(1, 1, true);
+    xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve(xhr.response.item) : reject(new Error(xhr.response?.error?.message || '文件未保存，可以重试。'));
+    xhr.onerror = xhr.ontimeout = xhr.onabort = () => reject(new Error('文件传输中断，输入和附件已保留。'));
+    xhr.onloadend = () => signal?.removeEventListener('abort', abort);
+    signal?.addEventListener('abort', abort, { once: true });
+    xhr.send(form);
   });
 }
+function drawUploadProgress() {
+  const value = composerDraft?.progress;
+  if (!value) { if (progress.firstChild) progress.replaceChildren(); return; }
+  let bar = progress.querySelector('progress');
+  if (!bar) {
+    bar = el('progress', { max: 100, 'aria-label': '附件整体上传进度' });
+    progress.replaceChildren(el('span'), bar);
+  }
+  progress.firstChild.textContent = value.name + ' · ' + value.percent + '% · ' + (value.saving ? '正在保存' : '上传中') + ' · 整体 ' + value.overall + '%';
+  bar.value = value.overall;
+}
 async function sendMessage(event) {
-  event.preventDefault(); if (sending || pendingThreadId || !session) return;
-  if (isGenerating()&&!textarea.value.trim()) { try { await request('/api/chat/threads/' + activeThread.id + '/stop', { method: 'POST' }); } catch (error) { toast(error.message, 'error'); } return; }
-  const text = textarea.value.trim() || (selectedFiles.length ? '分享一些文件。' : ''); if (!text) { textarea.focus(); return; }
-  const key = sendKey, files = [...selectedFiles], senderKey = session.key, actor = session, ticket = {};
-  activeSendTicket = ticket; sending = true; textarea.disabled = fileInput.disabled = true; reflectComposer();
+  event.preventDefault();
+  if (activeSendTicket || pendingThreadId || !session || !composerDraft) return;
+  const draft = composerDraft, files = [...draft.files], key = draft.key, actor = session, version = accountVersion;
+  const text = draft.text.trim() || (files.length ? '分享一些文件。' : '');
+  if (!text) return;
+  const mentionAssistant = !mention.closest('label').hidden && draft.mention;
+  const controller = new AbortController(), ticket = { draft, controller };
+  const valid = () => version === accountVersion && !controller.signal.aborted;
+  const options = { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]) };
+  activeSendTicket = ticket; draft.error = ''; reflectComposer();
   try {
-    if (!activeThread) { const result = await request('/api/chat/threads', { method: 'POST', json: {}, key: key + '_thread' }); if (session?.key !== senderKey) throw new Error('账号已变更，请在当前账号重新发送。'); activeThread = { ...result.item, members: [{ key: senderKey, username: session.username }] }; history.replaceState(null, '', '/chat?t=' + result.item.id); drawHeader(); }
-    const targetId = activeThread.id;
+    if (!draft.id) {
+      const result = await request('/api/chat/threads', { ...options, method: 'POST', json: {}, key: key + '_thread' });
+      if (!valid()) return;
+      inputDrafts.delete('');
+      try { localStorage.removeItem(draftStorage('')); } catch {}
+      draft.id = result.item.id;
+      inputDrafts.set(draft.id, draft); saveDraft(draft);
+      scheduleThreads();
+      if (!activeThread && !pendingThreadId) {
+        activeThread = { ...result.item, members: [{ key: actor.key, username: actor.username }] };
+        writeRoute({ replace: true });
+        drawHeader(); drawSidebar();
+      }
+    }
+    const targetId = draft.id;
     const ids = []; const total = files.reduce((n, entry) => n + entry.file.size, 0); let completed = 0;
     for (let i = 0; i < files.length; i++) {
-      if (session?.key !== senderKey) throw new Error('账号已变更，本次发送已停止。');
-      const entry = files[i]; let value = uploadCache.get(entry.file);
-      if (!value) value = await xhrUpload(entry, key + '_file_' + i, (loaded, size, saving) => {
-        if (session?.key !== senderKey || activeSendTicket !== ticket) return;
-        const percent = Math.min(100, Math.floor(loaded / size * 100)), overall = Math.min(100, Math.floor((completed + entry.file.size * loaded / size) / total * 100));
-        progress.replaceChildren(el('span', {}, entry.file.name + ' · ' + percent + '% · ' + (saving ? '正在保存' : '上传中') + ' · 整体 ' + overall + '%'), el('progress', { max: 100, value: overall, 'aria-label': '附件整体上传进度' }));
-      }, actor);
-      uploadCache.set(entry.file, value); ids.push(value.id); completed += entry.file.size;
+      if (!valid()) return;
+      const entry = files[i];
+      entry.uploaded ??= await xhrUpload(entry, key + '_file_' + i, (loaded, size, saving) => {
+        if (!valid()) return;
+        const percent = Math.min(100, Math.floor(loaded / size * 100));
+        const overall = Math.min(100, Math.floor((completed + entry.file.size * loaded / size) / total * 100));
+        draft.progress = { name: entry.file.name, percent, overall, saving };
+        if (composerDraft === draft) drawUploadProgress();
+      }, actor, controller.signal);
+      ids.push(entry.uploaded.id); completed += entry.file.size;
     }
-    if (session?.key !== senderKey) throw new Error('账号已变更，本次发送已停止。');
-    const result = await request('/api/chat/threads/' + targetId + '/messages', { method: 'POST', json: { text, attachmentIds: ids, mentionAssistant: mention.checked }, key });
-    if (session?.key !== senderKey) return;
-    inputDrafts.delete(targetId);
-    try{localStorage.removeItem('chat-input:'+senderKey+':'+targetId);}catch{}
-    if (activeThread?.id === targetId) { for (const item of result.items) upsert(item); textarea.value = ''; clearFiles(); progress.replaceChildren(); sendKey = crypto.randomUUID(); fitInput(); scrollToBottom(); }
-    await loadThreads(); markRead();
-  } catch (error) { if (session?.key === senderKey && activeSendTicket === ticket) { composerStatus.textContent = error.message; toast(error.message, 'error'); } }
-  finally { if (activeSendTicket === ticket) { activeSendTicket = null; sending = false; textarea.disabled = fileInput.disabled = false; reflectComposer(); textarea.focus(); } }
+    if (!valid()) return;
+    const result = await request('/api/chat/threads/' + targetId + '/messages', {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]),
+      method: 'POST', json: { text, attachmentIds: ids, mentionAssistant }, key,
+    });
+    if (!valid()) return;
+    discardPreviews(draft.files);
+    draft.files = []; draft.text = ''; draft.mention = false; draft.key = crypto.randomUUID();
+    saveDraft(draft);
+    if (composerDraft === draft) restoreDraft(targetId);
+    if (activeThread?.id === targetId && view === 'chat' && !windowHidden()) {
+      applyMessages(result.items); scrollToBottom();
+    }
+    scheduleThreads();
+  } catch (error) {
+    if (valid()) { draft.error = error.message + ' 草稿已保留。'; if (composerDraft !== draft) toast(draft.error, 'error'); }
+  } finally {
+    if (activeSendTicket === ticket) {
+      activeSendTicket = null; draft.progress = null;
+      if (composerDraft === draft) {
+        drawUploadProgress();
+        if (view === 'chat' && !pendingThreadId) textarea.focus();
+      }
+      reflectComposer();
+    }
+  }
 }
 
 function confirmAction(value, item, button) {
@@ -364,47 +805,176 @@ async function showAccounts(target) {
   try { await load(); } catch (error) { toast(error.message, 'error'); }
 }
 
+function writeRoute({ replace = false, threadId = activeThread?.id } = {}) {
+  const url = new URL('/chat', location.origin);
+  if (view !== 'chat') url.searchParams.set('view', view);
+  if (threadId) url.searchParams.set('t', threadId);
+  if (view === 'library') url.searchParams.set('section', section);
+  if (view === 'settings' || view === 'software') url.searchParams.set('section', pageSection);
+  if (url.href !== location.href) history[replace ? 'replaceState' : 'pushState'](null, '', url.pathname + url.search);
+}
+function setDesktopContext() {
+  window.hoshifuruDesktop?.setContext?.({ threadId: view === 'chat' && !pendingThreadId ? activeThread?.id : null });
+}
+function forgetThread(id) {
+  if (pendingThreadId === id) {
+    foregroundRequest?.abort();
+    pendingThreadId = null;
+  }
+  scrollPositions.delete(id);
+  if (activeThread?.id !== id) return;
+  threadRefresh?.controller.abort();
+  activeThread = null;
+  details.hidden = true;
+  resetTimeline();
+  restoreDraft();
+  welcome();
+  writeRoute({ replace: true });
+  drawHeader(); drawThreadList(); setDesktopContext();
+}
 async function navigate(next, options = {}) {
   if (!session) return;
   if (!Object.hasOwn(panels, next)) next = 'chat';
-  if (['manage', 'accounts','software'].includes(next) && session.role !== 'admin') { toast('此栏目仅管理员可用。', 'error'); next = 'chat'; }
-  if(view==='chat'&&activeThread)scrollPositions.set(activeThread.id,conversation.scrollTop);
-  view = next;document.body.classList.toggle('wide-page',view!=='chat');sidebar.hidden=view!=='chat';if(view!=='chat')details.hidden=true;
-  if(options.section){if(['settings','software'].includes(view))pageSection=options.section;else section=options.section;}
-  if(view==='software'&&!options.section)pageSection='overview';if(view==='settings'&&!options.section)pageSection='profile';
+  if (['manage', 'accounts', 'software'].includes(next) && session.role !== 'admin') {
+    toast('此栏目仅管理员可用。', 'error'); next = 'chat';
+  }
+  if (next === 'accounts') { next = 'software'; options = { ...options, section: 'users' }; }
+  const previousView = view, previousThreadId = activeThread?.id;
+  if (view === 'chat' && previousThreadId) scrollPositions.set(previousThreadId, conversation.scrollTop);
+  const version = ++routeVersion, isCurrent = () => Boolean(session && routeVersion === version);
+  foregroundRequest?.abort(); foregroundRequest = null;
+  threadRefresh?.controller.abort(); threadRefresh = null; catchingUp = false;
+  pendingThreadId = null;
+  clearTimeout(readTimer);
+  if (dialog.open) dialog.close();
+  view = next;
+  document.body.classList.toggle('wide-page', view !== 'chat');
+  sidebar.hidden = view !== 'chat';
+  details.hidden = true;
+  if (view === 'settings') pageSection = Object.hasOwn(personalSections, options.section) ? options.section : 'profile';
+  if (view === 'software') pageSection = Object.hasOwn(managementSections, options.section) ? options.section : 'overview';
+  if (view === 'library') section = Object.hasOwn(sectionNames, options.section) ? options.section : 'music';
   for (const [key, panel] of Object.entries(panels)) panel.hidden = key !== view;
   closeSidebar();
-  if (view === 'chat' && options.threadId) await loadThread(options.threadId);
-  else if (view === 'chat' && !activeThread) { messageNodes.clear(); welcome(); }
-  if (view === 'library') library.show(section);
-  if (view === 'manage') {
-    if (!adminModule) adminModule = await import('./admin.js');
-    if (adminOwner !== session.key) { await adminModule.mountAdmin(); adminOwner = session.key; }
-    if (options.panel) adminModule.activateAdminPanel(options.panel);
+  const target = options.threadId || (options.fromHistory && view === 'chat' ? null : previousThreadId);
+  if (view === 'chat' && target === null && activeThread) {
+    activeThread = null;
+    resetTimeline(); restoreDraft(); welcome();
   }
-  if (view === 'accounts') return navigate('software',{section:'users'});
-  if(['settings','software'].includes(view))await pages.render(panels[view],view,pageSection,options.surface);
-  if(view==='chat'&&activeThread)requestAnimationFrame(()=>{if(scrollPositions.has(activeThread.id))conversation.scrollTop=scrollPositions.get(activeThread.id);});
-  const url = new URL('/chat', location.origin); if (view !== 'chat') url.searchParams.set('view', view); if (activeThread) url.searchParams.set('t', activeThread.id); if (view === 'library') url.searchParams.set('section', section);if(['settings','software'].includes(view))url.searchParams.set('section',pageSection);
-  if (!options.fromHistory && url.href !== location.href) history.pushState(null, '', url.pathname + url.search);
-  drawHeader(); drawSidebar(); reflectComposer(); if (view === 'chat') markRead();
-  window.hoshifuruDesktop?.setContext?.({threadId:view==='chat'?activeThread?.id:null});
+  if (view === 'chat' && target && target !== activeThread?.id) pendingThreadId = target;
+  if (!pendingThreadId && !options.fromHistory) writeRoute();
+  drawHeader(); drawSidebar(); reflectComposer(); setDesktopContext();
+  if (pendingThreadId) {
+    const controller = new AbortController();
+    foregroundRequest = controller;
+    try {
+      await loadThread(target, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]), version });
+      if (!isCurrent()) return;
+      if (!options.fromHistory) writeRoute();
+    } catch (error) {
+      if (!isCurrent() || controller.signal.aborted) return;
+      toast(error.message, 'error');
+      if (options.fromHistory) writeRoute({ replace: true });
+    } finally {
+      if (isCurrent() && foregroundRequest === controller) {
+        foregroundRequest = null; pendingThreadId = null;
+        drawHeader(); drawThreadList(); reflectComposer(); setDesktopContext();
+      }
+    }
+  }
+  if (!isCurrent()) return;
+  if (view === 'chat') {
+    if (!activeThread && !list.firstElementChild) welcome();
+    fitInput();
+    if (previousView !== 'chat' && target === previousThreadId && scrollPositions.has(target)) conversation.scrollTop = scrollPositions.get(target);
+    updateLatestButton();
+    flushMessageQueue();
+    scheduleActiveRefresh();
+    markRead();
+  } else if (view === 'library') library.show(section);
+  else if (view === 'manage') {
+    adminModule ??= await import('./admin.js');
+    if (!isCurrent()) return;
+    if (adminOwner !== session.key) {
+      adminOwner = session.key;
+      await adminModule.mountAdmin({ connectWebsite: credentials => request('/api/chat/site/login', { method: 'POST', json: credentials }) });
+    }
+    if (isCurrent() && options.panel) adminModule.activateAdminPanel(options.panel);
+  } else await pages.render(panels[view], view, pageSection, options.surface, isCurrent);
 }
-function connect() {
-  source?.close(); source = new EventSource('/api/chat/events');
-  source.addEventListener('ready', async () => { connected = true; drawHeader(); await loadThreads().catch(() => {}); if (activeThread && session) await loadThread(activeThread.id, { background: true }).catch(() => {});socialUI.connected(); });
-  source.addEventListener('message', (event) => {
+function setConnectionState(state) {
+  connectionState = state;
+  const offline = state === 'offline';
+  connectionNotice.hidden = !offline;
+  const live = document.querySelector('[data-connection-status]');
+  if (live) live.textContent = { online: '实时消息已连接', connecting: '正在连接', offline: '实时消息已断开 · 正在重连' }[state];
+}
+async function checkSession() {
+  if (!session) return;
+  if (sessionRefresh) return sessionRefresh;
+  const version = accountVersion;
+  const job = request('/api/chat/session').then(value => {
+    if (version !== accountVersion) return;
+    session = value;
+    drawRail(); reflectComposer();
+  }).catch(() => {});
+  sessionRefresh = job;
+  await job;
+  if (sessionRefresh === job) sessionRefresh = null;
+}
+function openChatEvents() {
+  if (!session) return;
+  clearTimeout(reconnectTimer);
+  source?.close();
+  const stream = source = new EventSource('/api/chat/events');
+  stream.addEventListener('ready', () => {
+    if (source !== stream || !session) return;
+    reconnectDelay = 1000;
+    setConnectionState('online');
+    socialUI.connected();
+    void checkSession();
+    scheduleThreads();
+    scheduleActiveRefresh();
+  });
+  stream.addEventListener('message', event => {
+    if (source !== stream || !session) return;
     const value = JSON.parse(event.data);
     socialUI.notifyMessage(value);
     const notice = value.item.metadata?.noticeEventId;
     if (notice && !seenNotices.has(notice)) { seenNotices.add(notice); toast(value.item.metadata.questions ? '庭院收到新的来信，已放入「庭院来信」。' : '庭院更新已同步，批次清单已放入「庭院来信」。'); }
-    if (value.threadId === activeThread?.id) queueMessage(value.item); else scheduleThreads();
+    queueMessage(value);
+    if (value.item.status === 'complete') scheduleThreads();
   });
-  source.addEventListener('threads', () => scheduleThreads());
-  for(const topic of ['social','profiles','agents'])source.addEventListener(topic,()=>{request('/api/chat/profile').then(v=>{if(session){session.profile=v.item;drawSidebar();}}).catch(()=>{});socialUI.reload().catch(()=>{});});
-  source.addEventListener('read',()=>scheduleThreads());
-  source.addEventListener('deleted', (event) => { const value = JSON.parse(event.data); if (value.id === activeThread?.id) { activeThread = null; messageNodes.clear(); list.replaceChildren(); welcome(); drawHeader(); } scheduleThreads(); });
-  source.onerror = () => { connected = false;socialUI.connected(false); drawHeader(); };
+  stream.addEventListener('threads', event => {
+    const value = JSON.parse(event.data);
+    scheduleThreads();
+    if (value.threadId === activeThread?.id && value.reason !== 'message') scheduleActiveRefresh();
+  });
+  for (const topic of ['social', 'profiles', 'agents']) {
+    stream.addEventListener(topic, event => {
+      if (topic === 'profiles' && JSON.parse(event.data).key === session?.key) void checkSession();
+      scheduleThreads();
+      scheduleActiveRefresh();
+      socialUI.reloadSurface();
+    });
+  }
+  stream.addEventListener('read', scheduleThreads);
+  stream.addEventListener('deleted', event => { forgetThread(JSON.parse(event.data).id); scheduleThreads(); });
+  stream.onerror = () => {
+    if (source !== stream || !session) return;
+    setConnectionState('offline');
+    socialUI.connected(false);
+    if (stream.readyState !== EventSource.CLOSED) return;
+    // Chromium stops retrying after an HTTP error. Check session expiry, then reopen with backoff.
+    void checkSession();
+    reconnectTimer = setTimeout(openChatEvents, reconnectDelay);
+    reconnectDelay = Math.min(15000, reconnectDelay * 2);
+  };
+}
+connectionNotice.querySelector('button').onclick = openChatEvents;
+function connect() {
+  setConnectionState('connecting');
+  openChatEvents();
   updates?.close(); updates = new EventSource('/api/public/updates');
   updates.addEventListener('changes', () => refreshWebsite());
 }
@@ -420,20 +990,51 @@ async function refreshNotices() {
   finally { if (session?.key === owner) syncingNotices = false; }
 }
 async function enter() {
-  session = await request('/api/chat/session'); loginStage.hidden = true; loginStage.replaceChildren(); shell.hidden = false;
-  socialUI.start();buildComposer(); await loadThreads(); connect(); refreshWebsite(); trackRoute('/chat');
+  session = await request('/api/chat/session');
+  accountVersion++;
+  view = 'chat';
+  loginStage.hidden = true; loginStage.replaceChildren(); shell.hidden = false;
+  buildComposer(); socialUI.start(); connect(); refreshWebsite(); trackRoute('/chat');
+  void loadThreads().catch(error => toast(error.message, 'error'));
   const url = new URL(location.href); section = url.searchParams.get('section') || 'music';
   const wanted = url.pathname === '/chat/manage' ? 'manage' : url.searchParams.get('view') || 'chat';
   if(url.searchParams.get('t')&&wanted!=='chat')await loadThread(url.searchParams.get('t')).catch(()=>{});
   try { await navigate(wanted, { threadId: url.searchParams.get('t') || undefined,section:url.searchParams.get('section')||undefined, panel: url.searchParams.get('panel') || undefined, fromHistory: true }); }
-  catch (error) { activeThread = null; toast(error.message, 'error'); await navigate('chat'); }
+  catch (error) { toast(error.message, 'error'); await navigate('chat'); }
 }
-addEventListener('popstate', () => { if (!session) return; const url = new URL(location.href); navigate(url.searchParams.get('view') || 'chat', { threadId: url.searchParams.get('t') || undefined, section: url.searchParams.get('section') || 'music', fromHistory: true }).catch((e) => toast(e.message, 'error')); });
-addEventListener('focus', () => { if (!session) return;markRead(); request('/api/chat/session').then(value => {session=value;loadThreads(); if (activeThread) loadThread(activeThread.id, { background: true }); refreshWebsite(); }).catch(() => {}); });
-window.hoshifuruDesktop?.onOpenThread?.(id=>{if(session)navigate('chat',{threadId:id}).catch(e=>toast(e.message,'error'));});
-document.addEventListener('visibilitychange', () => { document.documentElement.classList.toggle('page-hidden', document.hidden); if (!document.hidden && session) { markRead(); if (activeThread) loadThread(activeThread.id, { background: true }).catch(() => {}); } });
-addEventListener('chat-auth-expired', showLogin);
-addEventListener('beforeinstallprompt', (event) => { event.preventDefault(); installPrompt = event; });
+addEventListener('popstate', () => {
+  if (!session) return;
+  const url = new URL(location.href);
+  void navigate(url.searchParams.get('view') || 'chat', { threadId: url.searchParams.get('t'), section: url.searchParams.get('section'), fromHistory: true });
+});
+addEventListener('focus', () => {
+  if (!session) return;
+  void checkSession();
+  scheduleThreads(); scheduleActiveRefresh(); void refreshWebsite();
+  markRead();
+});
+addEventListener('online', () => { if (session && connectionState === 'offline') openChatEvents(); });
+window.hoshifuruDesktop?.onOpenThread?.(id => { if (session) void navigate('chat', { threadId: id }); });
+function onVisibilityChanged() {
+  const hidden = windowHidden();
+  document.documentElement.classList.toggle('page-hidden', hidden);
+  if (hidden) {
+    clearTimeout(readTimer);
+    threadRefresh?.controller.abort();
+    pendingMessages.clear();
+  } else if (session) {
+    drawSidebar();
+    flushMessageQueue();
+    if (activeThread && view === 'chat' && !messageOrder.length) void refreshActiveThread();
+    else scheduleActiveRefresh();
+  }
+}
+document.addEventListener('visibilitychange', onVisibilityChanged);
+window.hoshifuruDesktop?.onVisibility?.(hidden => {
+  nativeHidden = hidden;
+  onVisibilityChanged();
+});
+addEventListener('chat-auth-expired', () => void checkSession());
 matchMedia('(max-width:760px)').addEventListener('change', () => closeSidebar());
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/chat-worker.js', { scope: '/chat' }).catch(() => {});
 setTimeout(() => document.querySelector('#app-boot')?.remove(), 950);

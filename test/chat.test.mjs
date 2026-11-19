@@ -80,6 +80,21 @@ test('portable app: role isolation, real DM/groups, private files, streaming/ret
     assert.equal((await request('/api/chat/threads/' + group.id, { as: accounts.charlie })).status, 404);
     assert.equal((await request('/api/chat/threads/' + group.id + '/messages', { as: admin, method: 'POST', json: { text: '/待办' } })).status, 403, 'private moderation commands cannot expose questions to a group');
   });
+  await t.test('reconnect cursor and bounded read retain newer unread messages', async () => {
+    const path = '/api/chat/threads/' + direct.id;
+    const from = accounts.alice, to = accounts.bob;
+    const [first] = await send(from, direct.id, '已看到的消息');
+    const [unseen] = await send(from, direct.id, '离线期间的新消息', { mentionAssistant: true });
+    assert.equal(calls, 0, 'friend messages stay between friends');
+    const recovered = await request(path + '?after=' + first.id, { as: to });
+    assert.deepEqual(recovered.value.messages.map(message => message.id), [unseen.id]);
+    assert.equal(recovered.value.nextAfter, null);
+    const read = await request(path + '/read?through=' + first.id, { as: to, method: 'POST' });
+    assert.equal(read.status, 200);
+    assert.equal((await request(path, { as: to })).value.item.unread, 1);
+    assert.equal((await request(path + '/read?through=' + unseen.id, { as: to, method: 'POST' })).status, 200);
+    assert.equal((await request(path, { as: to })).value.item.unread, 0);
+  });
   await t.test('files live in DB, are shared only with current members and remain referenced during collection', async () => {
     const picture = await sharp({ create: { width: 16, height: 16, channels: 3, background: '#ba97ad' } }).png().toBuffer();
     const form = new FormData(); form.set('kind', 'image'); form.set('file', new Blob([picture]), '星光.png');

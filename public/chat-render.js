@@ -44,11 +44,15 @@ export function messageView(item, handlers) {
   const status = el('div', { class: 'message-status' });
   const content = el('div', { class: 'message-content' }, el('div', { class: 'message-caption' }, sender,identity,(item.ai||item.role==='assistant')&&el('span',{class:'ai-member-badge'},'AI'), timeTag(item.createdAt, true)), bubble, status);
   const node = el('article', { class: 'message' + (self ? ' is-self' : '') + (item.role === 'assistant' ? ' assistant' : ''), 'data-message-id': item.id, 'aria-label': item.senderName + '的消息' }, avatar, content);
-  let finalMetadata;
+  let finalMetadata, renderedBody, renderedStatus, renderedHint, retryButton;
+  let avatarKey = (item.senderAvatar || '') + '|' + item.senderName;
   const details = el('div'); bubble.after(details);
   function drawExtras(current) {
     const meta = current.metadata || {};
-    if (JSON.stringify(meta) === finalMetadata) return; finalMetadata = JSON.stringify(meta); details.replaceChildren();
+    const signature = JSON.stringify([meta.attachments, meta.items, meta.category, meta.section, meta.questions, meta.drafts, meta.action]);
+    if (signature === finalMetadata) return;
+    finalMetadata = signature;
+    details.replaceChildren();
     if (meta.attachments?.length) details.append(el('div', { class: 'message-attachments' }, meta.attachments.map((file) => {
       if (file.mime.startsWith('image/')) {
         const button = el('button', { class: 'chat-attachment', type: 'button', 'aria-label': '放大附件 ' + file.name }, image(file.url + '/thumb', '', { width: 48, height: 48 }), el('span', {}, file.name)); button.onclick = () => showAppImage({ ...file, url: file.url }, file.name); return button;
@@ -82,19 +86,50 @@ export function messageView(item, handlers) {
     }
   }
   function update(current) {
-    sender.textContent=current.senderName;identity.textContent=(current.senderId||'').slice(-8);identity.title=current.senderId||current.senderKey;
-    const avatarKey=(current.senderAvatar||'')+'|'+current.senderName;
-    if(avatar.dataset.identity!==avatarKey){const next=current.senderAvatar?personAvatar({avatar:current.senderAvatar,displayName:current.senderName}):el('span',{class:'account-avatar','aria-hidden':true},current.role==='assistant'?icon('sparkle',17):current.senderName.slice(0,1).toUpperCase());next.dataset.identity=avatarKey;avatar.replaceWith(next);avatar=next;}
-    if (current.status === 'generating') {
-      if (current.body) bubble.textContent = current.body;
-      else bubble.replaceChildren(el('span', { class: 'typing-dots', 'aria-label': '正在回复' }, el('i'), el('i'), el('i')));
-    } else bubble.replaceChildren(markdown(current.body || (current.status === 'stopped' ? '已停止生成。' : '这次回复还没有写下文字。'), handlers));
-    status.replaceChildren(); status.classList.toggle('error', current.status === 'failed');
-    if (current.status === 'generating') status.textContent = '正在写下回复…';
-    else if (current.status === 'failed' || current.status === 'stopped') {
-      status.append(current.metadata?.error || '已停止，收到的文字已保留。');
-      if (current.metadata?.requestedBy === handlers.account().key) { const retry = action('重试回复'); retry.onclick = () => handlers.retry(current); status.append(retry); }
+    if (sender.textContent !== current.senderName) {
+      sender.textContent = current.senderName;
+      node.setAttribute('aria-label', current.senderName + '的消息');
     }
+    const id = (current.senderId || '').slice(-8);
+    if (identity.textContent !== id) identity.textContent = id;
+    identity.title = current.senderId || current.senderKey;
+    const nextAvatarKey = (current.senderAvatar || '') + '|' + current.senderName;
+    if (avatarKey !== nextAvatarKey) {
+      const next = current.senderAvatar ? personAvatar({ avatar: current.senderAvatar, displayName: current.senderName }) : el('span',
+        { class: 'account-avatar', 'aria-hidden': true }, current.role === 'assistant' ? icon('sparkle', 17) : current.senderName.slice(0, 1).toUpperCase());
+      avatar.replaceWith(next);
+      avatar = next;
+      avatarKey = nextAvatarKey;
+    }
+    if (renderedStatus !== current.status || renderedBody !== current.body) {
+      if (current.status === 'generating') {
+        if (current.body) {
+          if (bubble.firstChild?.nodeType === Node.TEXT_NODE) bubble.firstChild.data = current.body;
+          else bubble.textContent = current.body;
+        } else bubble.replaceChildren(el('span', { class: 'typing-dots', 'aria-label': '正在回复' }, el('i'), el('i'), el('i')));
+      } else bubble.replaceChildren(markdown(current.body || (current.status === 'stopped' ? '已停止生成。' : '这次回复还没有文字。'), handlers));
+    }
+    const failed = current.status === 'failed' || current.status === 'stopped';
+    const hint = current.status === 'generating' ? (current.metadata?.queued ? '等待回复…' : '正在写下回复…')
+      : failed ? current.metadata?.error || '回复已停止。' : '';
+    if (renderedStatus !== current.status || renderedHint !== hint) {
+      status.textContent = hint;
+      status.classList.toggle('error', current.status === 'failed');
+      if (failed && current.metadata?.requestedBy === handlers.account().key) {
+        retryButton = action('重试回复');
+        retryButton.onclick = async () => {
+          if (retryButton.disabled) return;
+          const button = retryButton;
+          button.disabled = true;
+          try { await handlers.retry(current); }
+          finally { button.disabled = false; }
+        };
+        status.append(retryButton);
+      }
+    }
+    renderedStatus = current.status;
+    renderedBody = current.body;
+    renderedHint = hint;
     drawExtras(current);
   }
   update(item); return { node, update };

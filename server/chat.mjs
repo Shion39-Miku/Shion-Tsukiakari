@@ -19,7 +19,7 @@ export function createChat(db, config, json) {
   const connections = new Set(), runs = new Map();
   let ai;
   let closing = false, loggingIn = 0, fileUploads = 0;
-  const contacts = () => social.users();
+  const contactKeys = () => new Set(social.users().map(user => user.key));
   const members = (id) => social.members(id);
   const message = (row) => {const value=social.message(baseMessage(row));return ai?ai.decorate(value):value;};
   // An interrupted provider request is never silently repeated after a restart.
@@ -49,6 +49,14 @@ export function createChat(db, config, json) {
     if (row) emit(owner, thread, 'message', { item: message(row) });
   };
   ai=createChatAI(db,config,{social,own,emit,publish:publishMessage,message});
+  function submittedMessages(threadId, storageKey, fingerprint) {
+    const rows = db.prepare('SELECT * FROM chat_messages WHERE thread_id=? AND request_key=? ORDER BY id').all(threadId, storageKey);
+    if (!rows.length) return null;
+    const user = rows.find(row => row.role === 'user');
+    check(user && JSON.parse(user.metadata).fingerprint === fingerprint, '重试标识已用于另一条消息。', 409, 'idempotency_conflict');
+    const replies = db.prepare('SELECT m.* FROM chat_ai_jobs j JOIN chat_messages m ON m.id=j.reply_id WHERE j.source_id=? ORDER BY m.id').all(user.id);
+    return [...rows, ...replies];
+  }
   async function syncNotices(session,req) {
     requireManager(session);
     const created = [];
@@ -208,7 +216,11 @@ export function createChat(db, config, json) {
   }
   const heartbeat = setInterval(() => {
     for (const stream of connections) {
-      try { requireAccount(db, stream.req); stream.res.write(': connected\n\n'); } catch { stream.res.end(); }
+      try {
+        requireAccount(db, stream.req);
+        if (stream.res.writableLength > 128 * 1024) stream.res.destroy();
+        else { stream.res.write(': connected\n\n'); social.keepConnection(stream.id); }
+      } catch { stream.res.end(); }
     }
   }, 15_000); heartbeat.unref();
 
@@ -265,24 +277,39 @@ export function createChat(db, config, json) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders();
       res.write('retry: 1500\nevent: ready\ndata: {}\n\n'); const stream = { id:newId(), res, req, owner: session.key }; connections.add(stream); social.openConnection(session.key,stream.id); res.once('close', () => {connections.delete(stream);social.closeConnection(stream.id);}); return true;
     }
-    if (path === '/api/chat/session' && method === 'GET') { social.ensureProfiles(); json(res, { ...publicAccount(session), profile:social.profile(session.key,session.key), assistantName: config.chat?.assistantName || '大肥鱼', astrbotConfigured:ai.configured, aiReady: ai.configured||Boolean(config.chat?.apiBase && config.chat?.apiKey && config.chat?.model) }); return true; }
+    if (path === '/api/chat/session' && method === 'GET') {
+      let profile = social.profile(session.key, session.key);
+      if (!profile) { social.ensureProfiles(); profile = social.profile(session.key, session.key); }
+      json(res, { ...publicAccount(session), profile, assistantName: config.chat?.assistantName || '大肥鱼',
+        astrbotConfigured: ai.configured, aiReady: ai.configured || Boolean(config.chat?.apiBase && config.chat?.apiKey && config.chat?.model) });
+      return true;
+    }
     if (path === '/api/chat/logout' && method === 'POST') { json(res, { ok: true }, 200, { 'Set-Cookie': logoutAccount(db, req, config.secureCookie) }); for (const s of connections) if (s.owner === session.key) s.res.end(); return true; }
     if (path === '/api/chat/threads' && method === 'GET') {
       const offset = Number(url.searchParams.get('offset') || 0); check(Number.isSafeInteger(offset) && offset >= 0, '分页参数无效。');
-      const rows = db.prepare('SELECT t.* FROM chat_threads t JOIN chat_members m ON m.thread_id=t.id WHERE m.account_key=? AND m.hidden=0 ORDER BY t.updated_at DESC,t.id DESC LIMIT 51 OFFSET ?').all(session.key, offset);
+      const limit = Number(url.searchParams.get('limit') || 50);
+      check(Number.isInteger(limit) && limit >= 1 && limit <= 300, '会话分页大小无效。');
+      const rows = db.prepare('SELECT t.* FROM chat_threads t JOIN chat_members m ON m.thread_id=t.id WHERE m.account_key=? AND m.hidden=0 ORDER BY t.updated_at DESC,t.id DESC LIMIT ? OFFSET ?').all(session.key, limit + 1, offset);
       const totalUnread=db.prepare("SELECT count(*) AS n FROM chat_messages msg JOIN chat_members m ON m.thread_id=msg.thread_id WHERE m.account_key=? AND m.hidden=0 AND msg.sender_key!=? AND msg.status='complete' AND NOT EXISTS(SELECT 1 FROM chat_message_reads r WHERE r.account_key=? AND r.message_id=msg.id)").get(session.key,session.key,session.key).n;
-      json(res, { items: rows.slice(0, 50).map((r) => threadView(r, session)),totalUnread, nextOffset: rows.length > 50 ? offset + 50 : null }); return true;
+      json(res, { items: rows.slice(0, limit).map((r) => threadView(r, session)), totalUnread, nextOffset: rows.length > limit ? offset + limit : null }); return true;
     }
     if (path === '/api/chat/threads' && method === 'POST') {
       const key = requestKey(req), data = await readJson(req, 8192); const title = cleanText(data.title || '新的夜话', '对话标题', 80, true);
       const kind = data.kind || 'ai'; check(['ai', 'direct', 'group'].includes(kind), '对话类型无效。');
+      check(data.aiId == null || kind === 'ai' && idPattern.test(data.aiId), '新建会话的 AI 选项无效。');
       check(data.members == null || Array.isArray(data.members) && data.members.every((v) => typeof v === 'string'), '成员列表无效。');
       const joined = [...new Set([session.key, ...(data.members || [])])];
       check(joined.length <= 30 && (kind === 'ai' ? joined.length === 1 : kind === 'direct' ? joined.length === 2 : joined.length >= 1), '私聊需要另一位成员，群聊最多30人。');
-      check(joined.every((id) => contacts().some((c) => c.key === id)), '成员不存在或账号已停用。');
+      const known = contactKeys();
+      check(joined.every(id => known.has(id)), '成员不存在或账号已停用。');
       const pair = kind === 'direct' ? [...joined].sort().join('|') : null;
       if (kind === 'direct') check(social.isFriend(joined[0],joined[1]),'请先发送好友申请，并由对方接受。',403,'friend_required');
-      const scope = 'chat-thread:' + session.key, fingerprint = sha256(JSON.stringify([title, kind, [...joined].sort()]));
+      const scope = 'chat-thread:' + session.key;
+      const fingerprint = sha256(JSON.stringify(data.aiId ? [title, kind, [...joined].sort(), data.aiId] : [title, kind, [...joined].sort()]));
+      if (data.aiId && !db.prepare('SELECT 1 FROM idempotency WHERE scope=? AND key=?').get(scope, key)) {
+        await ai.refreshAgents();
+        requireAccount(db, req);
+      }
       let item;
       transaction(db, () => {
         const previous = db.prepare('SELECT fingerprint,result FROM idempotency WHERE scope=? AND key=?').get(scope, key);
@@ -295,6 +322,7 @@ export function createChat(db, config, json) {
         for (const member of kind==='group'?[session.key]:joined) db.prepare('INSERT INTO chat_members (thread_id,account_key,joined_at) VALUES (?,?,?)').run(id, member, at);
         if(kind==='group')for(const member of joined.filter(key=>key!==session.key))social.invite(session,id,member);
         if (pair) db.prepare('INSERT INTO chat_direct_pairs VALUES (?,?)').run(pair, id);
+        if (data.aiId) ai.addAI(session, id, data.aiId);
         item = threadView(own(session, id), session); db.prepare('INSERT INTO idempotency VALUES (?,?,?,?)').run(scope, key, fingerprint, JSON.stringify(item));
       }); emit(null, item.id, 'threads', {}); json(res, { item }, 201); return true;
     }
@@ -302,9 +330,17 @@ export function createChat(db, config, json) {
     if (threadRoute) {
       const [, id, action] = threadRoute; const thread = own(session, id);
       if (!action && method === 'GET') {
+        const item = { ...threadView(thread, session), members: members(id) };
+        if (url.searchParams.has('after')) {
+          const after = Number(url.searchParams.get('after'));
+          check(Number.isSafeInteger(after) && after >= 0 && !url.searchParams.has('before'), '分页参数无效。');
+          const rows = db.prepare('SELECT * FROM chat_messages WHERE thread_id=? AND id>? ORDER BY id LIMIT 61').all(id, after);
+          json(res, { item, messages: rows.slice(0, 60).map(message), nextAfter: rows.length > 60 ? rows[59].id : null });
+          return true;
+        }
         const before = Number(url.searchParams.get('before') || Number.MAX_SAFE_INTEGER); check(Number.isSafeInteger(before) && before > 0, '分页参数无效。');
         const rows = db.prepare('SELECT * FROM chat_messages WHERE thread_id=? AND id<? ORDER BY id DESC LIMIT 61').all(id, before);
-        json(res, { item: { ...threadView(thread, session), members: members(id) }, messages: rows.slice(0, 60).reverse().map(message), before: rows.length > 60 ? rows[59].id : null }); return true;
+        json(res, { item, messages: rows.slice(0, 60).reverse().map(message), before: rows.length > 60 ? rows[59].id : null }); return true;
       }
       if (!action && method === 'PATCH') {
         check(thread.kind !== 'direct' && thread.owner === session.key, '只有创建者可修改这段对话的名称。', 403, 'owner_required');
@@ -319,13 +355,24 @@ export function createChat(db, config, json) {
       if (action === 'members' && method === 'PUT') {
         check(thread.kind === 'group' && thread.owner === session.key, '只有群主可管理群成员。', 403, 'owner_required');
         const data = await readJson(req, 8192); check(Array.isArray(data.members) && data.members.every((v) => typeof v === 'string'), '成员列表无效。');
-        const joined = [...new Set([session.key, ...data.members])]; check(joined.length >= 1 && joined.length <= 30 && joined.every((key) => contacts().some((c) => c.key === key)), '群成员最多30个有效账号。');
+        const joined = [...new Set([session.key, ...data.members])], known = contactKeys();
+        check(joined.length >= 1 && joined.length <= 30 && joined.every(key => known.has(key)), '群成员最多30个有效账号。');
         transaction(db, () => {
           for (const old of members(id)) if (old.kind!=='ai' && !joined.includes(old.key)) social.removeMember(id,old.key);
           for (const key of joined.filter(key=>!members(id).some(m=>m.key===key))) social.invite(session,id,key);
         }); emit(null, id, 'threads', {}); json(res, { members: members(id) }); return true;
       }
-      if (action === 'read' && method === 'POST') { db.prepare("INSERT INTO chat_message_reads SELECT ?,id FROM chat_messages WHERE thread_id=? AND status='complete' ON CONFLICT DO NOTHING").run(session.key,id);db.prepare('UPDATE chat_members SET last_read_id=(SELECT coalesce(max(id),0) FROM chat_messages WHERE thread_id=?) WHERE thread_id=? AND account_key=?').run(id, id, session.key);emit(session.key,null,'read',{id});json(res, { ok: true }); return true; }
+      if (action === 'read' && method === 'POST') {
+        const through = Number(url.searchParams.get('through') ?? Number.MAX_SAFE_INTEGER);
+        check(Number.isSafeInteger(through) && through >= 0, '已读位置无效。');
+        const changes = transaction(db, () => {
+          const result = db.prepare("INSERT INTO chat_message_reads SELECT ?,id FROM chat_messages WHERE thread_id=? AND id<=? AND status='complete' AND sender_key!=? ON CONFLICT DO NOTHING").run(session.key, id, through, session.key);
+          if (result.changes) db.prepare('UPDATE chat_members SET last_read_id=max(last_read_id,(SELECT coalesce(max(id),0) FROM chat_messages WHERE thread_id=? AND id<=?)) WHERE thread_id=? AND account_key=?').run(id, through, id, session.key);
+          return result.changes;
+        });
+        if (changes) emit(session.key, null, 'read', { id });
+        json(res, { ok: true }); return true;
+      }
       if (action === 'stop' && method === 'POST') {ai.stop(session,id); for (const run of runs.values()) if (run.thread === id && run.owner === session.key) run.controller.abort(); json(res, { ok: true }); return true; }
       if (action === 'retry' && method === 'POST') {
         const data = await readJson(req, 4096), row = db.prepare('SELECT * FROM chat_messages WHERE id=? AND thread_id=? AND role=?').get(Number(data.messageId), id, 'assistant');
@@ -343,38 +390,49 @@ export function createChat(db, config, json) {
         const storageKey = session.key + ':' + key;
         check(data.mentionAssistant == null || typeof data.mentionAssistant === 'boolean', '@助理选项无效。');
         const files = attachments(session, data.attachmentIds || []); const fingerprint = sha256(JSON.stringify([text, files.map((f) => f.id), data.mentionAssistant === true]));
-        const existing = db.prepare("SELECT * FROM chat_messages WHERE thread_id=? AND request_key=? AND role='user'").get(id, storageKey);
-        if (existing) {
-          check(JSON.parse(existing.metadata).fingerprint === fingerprint, '重试标识已用于另一条消息。', 409, 'idempotency_conflict');
-          json(res, { items: db.prepare('SELECT * FROM chat_messages WHERE thread_id=? AND request_key=? ORDER BY id').all(id, storageKey).map(message) }); return true;
-        }
-        const publicCommand = /^\/(?:查询|播放)\s/.test(text) || /^(?:播放|听听)\s/.test(text) || /^查看\s*(?:音乐分享|音乐|游戏分享|游戏|猫猫图|猫图|关于我|提问箱|首页)$/.test(text);
-        const selectedAgents=ai.configured?await ai.prepare(session,thread,data.aiId):[];
-        const needsAssistant = thread.kind === 'ai' || publicCommand || data.mentionAssistant === true || selectedAgents.length>0;
-        if(ai.configured && thread.kind==='group' && data.mentionAssistant && !selectedAgents.length)throw new Problem(409,'invite_ai_first','请先从服务器AI列表邀请AI入群。');
         if (thread.kind !== 'ai' && /^\/(?:月站\s+)?(?:待办|草稿|回复|发布|同步|音乐|游戏)(?:\s|$)/.test(text)) {
           throw new Problem(403, 'private_command_required', '网站管理指令请在与助理的私人对话中使用。');
         }
-        if (needsAssistant && !selectedAgents.length) check(![...runs.values()].some((run) => run.thread === id || run.owner === session.key) && runs.size < 4, '请先等待当前回复结束，或停止生成。', 409, 'chat_busy');
-        const result = needsAssistant ? await command(session, text, files,req) : null;
+        const existing = submittedMessages(id, storageKey, fingerprint);
+        if (existing) { json(res, { items: existing.map(message) }); return true; }
+        const raw = text.replace(/^\/月站\s+/, '/');
+        const publicCommand = raw === '/帮助' || /^\/(?:查询|播放)\s/.test(raw) || /^(?:播放|听听)\s/.test(raw) || /^查看\s*(?:音乐分享|音乐|游戏分享|游戏|猫猫图|猫图|关于我|提问箱|首页)$/.test(raw);
+        const explicitGroupReply = thread.kind === 'group' && data.mentionAssistant === true;
+        // Local commands can still answer while the model service is offline.
+        const result = thread.kind === 'ai' || publicCommand ? await command(session, text, files, req) : null;
+        if (!result && ai.configured && thread.kind !== 'direct') {
+          await ai.prepare(session, thread, data.aiId, () => own(requireAccount(db, req), id));
+        }
+        const current = own(requireAccount(db, req), id);
+        let rows, created = false;
         let assistantId;
         transaction(db, () => {
+          rows = submittedMessages(id, storageKey, fingerprint);
+          if (rows) return;
+          const selectedAgents = !result && ai.configured && current.kind !== 'direct' ? ai.memberAIs(id) : [];
+          const needsAssistant = Boolean(result) || current.kind === 'ai' || explicitGroupReply || selectedAgents.length > 0;
+          if (ai.configured && explicitGroupReply && !selectedAgents.length && !result) throw new Problem(409, 'invite_ai_first', '请先从服务器 AI 列表邀请 AI 入群。');
+          if (needsAssistant && !result && !selectedAgents.length) {
+            check(![...runs.values()].some(run => run.thread === id || run.owner === session.key) && runs.size < 4, '请先等待当前回复结束，或停止生成。', 409, 'chat_busy');
+          }
           consumeQuota(db, 'chat-message:' + session.key, 60, 60_000);
           if (needsAssistant) { consumeQuota(db, 'chat:' + session.key, 20, 60_000); consumeQuota(db, 'chat-day:' + session.key, session.role === 'admin' ? 1000 : 200, 86400_000); }
           const at = now(); const insert = db.prepare('INSERT INTO chat_messages (thread_id,role,sender_key,sender_name,body,status,metadata,request_key,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)');
           const inserted=insert.run(id, 'user', session.key, session.username, text, 'complete', JSON.stringify({ attachments: files, fingerprint }), storageKey, at, at);
           const sourceRow=db.prepare('SELECT * FROM chat_messages WHERE id=?').get(Number(inserted.lastInsertRowid));ai.remember(sourceRow);
-          if(selectedAgents.length && !result)ai.queue(session,thread,sourceRow,selectedAgents);
+          if(selectedAgents.length)ai.queue(session,current,sourceRow,selectedAgents);
           else if (needsAssistant) assistantId = Number(insert.run(id, 'assistant', 'assistant', config.chat?.assistantName || '大肥鱼', result?.body || '', result ? 'complete' : 'generating', JSON.stringify({ ...result?.metadata, requestedBy: session.key }), storageKey, at, at).lastInsertRowid);
-          db.prepare('UPDATE chat_threads SET title=?,updated_at=? WHERE id=?').run(thread.kind === 'ai' && thread.title === '新的夜话' ? text.replace(/^\//, '').slice(0, 28) : thread.title, at, id);
+          db.prepare('UPDATE chat_threads SET title=?,updated_at=? WHERE id=?').run(current.kind === 'ai' && current.title === '新的夜话' ? text.replace(/^\//, '').slice(0, 28) : current.title, at, id);
           db.prepare('UPDATE chat_members SET hidden=0 WHERE thread_id=?').run(id);
+          rows = submittedMessages(id, storageKey, fingerprint);
+          created = true;
         });
-        const rows = db.prepare('SELECT * FROM chat_messages WHERE thread_id=? AND request_key=? ORDER BY id').all(id, storageKey);
-        for (const row of rows) publishMessage(session.key, id, row.id);
-        for(const row of db.prepare("SELECT m.* FROM chat_ai_jobs j JOIN chat_messages m ON m.id=j.reply_id WHERE j.source_id IN(SELECT id FROM chat_messages WHERE thread_id=? AND request_key=? AND role='user')").all(id,storageKey))publishMessage(session.key,id,row.id);
-        emit(null, id, 'threads', {});
-        if (needsAssistant && !result && !selectedAgents.length) void generate(session, id, assistantId);
-        json(res, { items: rows.map(message) }, 201); return true;
+        if (created) {
+          for (const row of rows) publishMessage(session.key, id, row.id);
+          emit(null, id, 'threads', { reason: 'message' });
+          if (assistantId && !result) void generate(session, id, assistantId);
+        }
+        json(res, { items: rows.map(message) }, created ? 201 : 200); return true;
       }
     }
     throw new Problem(404, 'not_found', '找不到聊天接口。');

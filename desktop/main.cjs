@@ -112,7 +112,7 @@ async function newAccountWindow() {
   configureSession(session.fromPartition(partition));
   const extra = new BrowserWindow({ width: 1100, height: 820, minWidth: 720, minHeight: 540, title: '月明かり', show: false, backgroundColor: '#101321',
     icon: join(__dirname, 'icon.ico'), autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#11141f', symbolColor: '#dec9e1', height: 32 },
-    webPreferences: { preload: join(__dirname, 'preload.cjs'), partition, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false,backgroundThrottling:false, navigateOnDragDrop: false } });
+    webPreferences: { preload: join(__dirname, 'preload.cjs'), partition, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false, navigateOnDragDrop: false } });
   safeWebContents(extra); extra.once('ready-to-show', () => extra.show()); await extra.loadURL(origin + '/chat');
 }
 async function stopBackend() {
@@ -200,7 +200,7 @@ async function main() {
   win = new BrowserWindow({ width: Math.max(880, Math.min(2560, bounds.width || 1320)), height: Math.max(600, Math.min(1600, bounds.height || 900)), minWidth: 800, minHeight: 580,
     title: '月明かり', icon: join(__dirname, 'icon.ico'), backgroundColor: '#101321', show: false, autoHideMenuBar: true,
     titleBarStyle: 'hidden', titleBarOverlay: { color: '#11141f', symbolColor: '#dec9e1', height: 32 },
-    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false, backgroundThrottling: false, navigateOnDragDrop: false } });
+    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false, navigateOnDragDrop: false } });
   setMenu();
   win.on('close', () => { if (!win.isDestroyed()) { preferences.window = { ...win.getNormalBounds(), maximized: win.isMaximized() }; writeJson(configPath, preferences); } });
   win.on('closed', () => { win = null; });

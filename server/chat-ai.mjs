@@ -37,13 +37,20 @@ export function createChatAI(db,config,{social,own,emit,publish,message}) {
   function invalidate(thread){
     for(const r of active.values())if(r.thread===thread)r.controller.abort();
     db.prepare("UPDATE chat_ai_jobs SET state='canceled',updated_at=? WHERE thread_id=? AND state='queued'").run(now(),thread);
-    db.prepare("UPDATE chat_messages SET status='stopped',metadata=json_set(metadata,'$.error','群成员或共享授权已变更，已停止旧上下文回复。'),updated_at=? WHERE id IN(SELECT reply_id FROM chat_ai_jobs WHERE thread_id=? AND state='canceled') AND status='generating'").run(now(),thread);
+    const stopped = db.prepare("UPDATE chat_messages SET status='stopped',metadata=json_set(metadata,'$.error','群成员或共享授权已变更，已停止旧上下文回复。'),updated_at=? WHERE id IN(SELECT reply_id FROM chat_ai_jobs WHERE thread_id=? AND state='canceled') AND status='generating' RETURNING id").all(now(),thread);
+    for (const { id } of stopped) queueMicrotask(() => publish(null, thread, id));
     for(const s of db.prepare('SELECT umo,roster_version FROM chat_ai_sessions WHERE thread_id=?').all(thread))if(configured)void jsonRemote('/v2/scopes/revoke',{method:'POST',body:{umo:s.umo,epoch:s.roster_version}}).catch(()=>{});
   }
-  async function prepare(session,thread,selected){
+  async function prepare(session,thread,selected,authorize){
     if(!configured)return [];
-    if(selected){await refreshAgents();addAI(session,thread.id,selected);}
-    if(thread.kind==='ai'&&!memberAIs(thread.id).length){const list=await refreshAgents();check(list.defaultId,'服务器没有可用AI，请在AI列表中检查。',503);addAI(session,thread.id,list.defaultId);}
+    if(selected){await refreshAgents();authorize();addAI(session,thread.id,selected);}
+    if(thread.kind==='ai'&&!memberAIs(thread.id).length){
+      const list=await refreshAgents();authorize();
+      if (!memberAIs(thread.id).length) {
+        check(list.defaultId,'服务器没有可用 AI，请在 AI 列表中检查。',503);
+        addAI(session,thread.id,list.defaultId);
+      }
+    }
     return memberAIs(thread.id);
   }
   function remember(row){
@@ -71,7 +78,7 @@ export function createChatAI(db,config,{social,own,emit,publish,message}) {
     return {requestId:job.id+'-'+job.attempt,personaId:a.remote_id,title:thread.title,scope:{threadId:thread.id,aiId:a.id,kind:thread.kind,epoch:session.roster_version},members:humans.map(u=>({id:u.id,displayName:u.displayName,kind:'human'})),messages,summary,memories};
   }
   function queue(session,thread,source,selectedAgents){
-    remember(source);const result=[];
+    const result=[];
     for(const a of selectedAgents){let old=db.prepare('SELECT * FROM chat_ai_jobs WHERE source_id=? AND ai_id=?').get(source.id,a.id);if(old){const m=db.prepare('SELECT * FROM chat_messages WHERE id=?').get(old.reply_id);if(m)result.push(m);continue;}
       const id=newId(),at=now(),meta=JSON.stringify({requestedBy:session.key,aiId:a.id,sourceMessageId:source.id,queued:true});
       const reply=db.prepare("INSERT INTO chat_messages(thread_id,role,sender_key,sender_name,body,status,metadata,request_key,created_at,updated_at) VALUES(?,'assistant',?,?,?,'generating',?,?,?,?)").run(thread.id,'ai:'+a.id,a.name,'',meta,'ai-job:'+id,at,at);
@@ -86,17 +93,17 @@ export function createChatAI(db,config,{social,own,emit,publish,message}) {
     db.prepare('UPDATE chat_messages SET body=?,status=?,metadata=?,updated_at=? WHERE id=?').run(text,status,JSON.stringify(meta),now(),job.reply_id);publish(null,job.thread_id,job.reply_id);
   }
   async function run(job){
-    const controller=new AbortController();const state={thread:job.thread_id,controller,text:''};active.set(job.id,state);let completed=false,timer;
+    const controller=new AbortController();const state={thread:job.thread_id,controller,text:''};active.set(job.id,state);let completed=false,timer,conversationId;
     try{
       const packet=context(job);check(db.prepare('SELECT roster_version FROM chat_ai_sessions WHERE thread_id=? AND ai_id=?').get(job.thread_id,job.ai_id).roster_version===job.roster_version,'会话成员已更新。',409);
       const response=await remote('/v2/chat',{method:'POST',body:packet,signal:AbortSignal.any([controller.signal,AbortSignal.timeout(200000)])});
       if(response.headers.get('content-type')?.includes('application/json')){const value=await response.json();check(value.state==='complete','上一条处理未完成，请稍后重试。',409);state.text=value.reply;completed=true;}
       else{const reader=response.body.getReader(),decoder=new TextDecoder();let pending='';try{while(!completed){const part=await reader.read();pending+=decoder.decode(part.value||new Uint8Array(),{stream:!part.done});check(pending.length<1000000,'AI返回异常。');let cut;
-        while((cut=pending.indexOf('\n'))>=0){const line=pending.slice(0,cut).trim();pending=pending.slice(cut+1);if(!line.startsWith('data:'))continue;const data=line.slice(5).trim();if(data==='[DONE]'){completed=true;break;}const value=JSON.parse(data);check(!value.error,'AstrBot回复中断。',502);if(value.delta){state.text+=value.delta;check(state.text.length<=60000,'AI回复过长。');if(!timer)timer=setTimeout(()=>{timer=null;update(job,state.text,'generating');},100);}if(value.conversationId)db.prepare('UPDATE chat_ai_sessions SET conversation_id=? WHERE thread_id=? AND ai_id=?').run(value.conversationId,job.thread_id,job.ai_id);}
+        while((cut=pending.indexOf('\n'))>=0){const line=pending.slice(0,cut).trim();pending=pending.slice(cut+1);if(!line.startsWith('data:'))continue;const data=line.slice(5).trim();if(data==='[DONE]'){completed=true;break;}const value=JSON.parse(data);check(!value.error,'AstrBot回复中断。',502);if(value.delta){state.text+=value.delta;check(state.text.length<=60000,'AI回复过长。');if(!timer)timer=setTimeout(()=>{timer=null;update(job,state.text,'generating');},100);}if(value.conversationId&&value.conversationId!==conversationId){conversationId=value.conversationId;db.prepare('UPDATE chat_ai_sessions SET conversation_id=? WHERE thread_id=? AND ai_id=?').run(conversationId,job.thread_id,job.ai_id);}}
         if(part.done)break;
       }}finally{await reader.cancel().catch(()=>{});}}
       check(completed&&state.text.trim(),'回复未完成，已保留收到的内容。',502);update(job,state.text,'complete');db.prepare("UPDATE chat_ai_jobs SET state='complete',updated_at=? WHERE id=?").run(now(),job.id);db.prepare('UPDATE chat_ai_sessions SET last_message_id=?,updated_at=? WHERE thread_id=? AND ai_id=?').run(job.source_id,now(),job.thread_id,job.ai_id);
-    }catch(error){if(!closed){const stop=controller.signal.aborted;update(job,state.text,stop?'stopped':'failed',stop?'成员或授权已更新，已停止旧回复。':error instanceof Problem?error.message:'AstrBot回复暂未完成，可明确重试。');db.prepare('UPDATE chat_ai_jobs SET state=?,updated_at=? WHERE id=?').run(stop?'canceled':'failed',now(),job.id);}}
+    }catch(error){if(!closed){const stop=controller.signal.aborted;update(job,state.text,stop?'stopped':'failed',stop?(state.stopReason||'成员或授权已更新，已停止旧回复。'):error instanceof Problem?error.message:'AstrBot 回复暂未完成，可重试。');db.prepare('UPDATE chat_ai_jobs SET state=?,updated_at=? WHERE id=?').run(stop?'canceled':'failed',now(),job.id);}}
     finally{clearTimeout(timer);active.delete(job.id);if(!closed)void pump();}
   }
   async function pump(){if(closed||pumping)return;pumping=true;try{while(active.size<4){let job;transaction(db,()=>{job=db.prepare("SELECT j.* FROM chat_ai_jobs j WHERE state='queued' AND NOT EXISTS(SELECT 1 FROM chat_ai_jobs r WHERE r.thread_id=j.thread_id AND r.ai_id=j.ai_id AND r.state='running') ORDER BY source_id,created_at LIMIT 1").get();if(job)db.prepare("UPDATE chat_ai_jobs SET state='running',updated_at=? WHERE id=? AND state='queued'").run(now(),job.id);});if(!job)break;void run(job);}}finally{pumping=false;}}
@@ -105,6 +112,20 @@ export function createChatAI(db,config,{social,own,emit,publish,message}) {
   async function recover(){for(const job of db.prepare("SELECT * FROM chat_ai_jobs WHERE state='running'").all()){try{const r=await jsonRemote('/v2/requests/'+encodeURIComponent(job.id+'-'+job.attempt));if(closed)return;if(r.item?.state==='complete'){update(job,r.item.reply,'complete');db.prepare("UPDATE chat_ai_jobs SET state='complete' WHERE id=?").run(job.id);continue;}}catch{}if(closed)return;update(job,db.prepare('SELECT body FROM chat_messages WHERE id=?').get(job.reply_id)?.body||'','failed','服务重启，已保留内容；未自动重复模型调用。');db.prepare("UPDATE chat_ai_jobs SET state='failed' WHERE id=?").run(job.id);}void pump();}
   void recover();
   function retry(session,replyId){const job=db.prepare('SELECT * FROM chat_ai_jobs WHERE reply_id=?').get(replyId);if(!job)return false;own(session,job.thread_id);check(JSON.parse(db.prepare('SELECT metadata FROM chat_messages WHERE id=?').get(replyId).metadata).requestedBy===session.key,'只能重试自己发起的回复。',403);check(['failed','canceled'].includes(job.state),'当前回复不能重试。',409);agent(job.ai_id);check(memberAIs(job.thread_id).some(a=>a.id===job.ai_id),'AI已退出本群。',410);db.prepare("UPDATE chat_ai_jobs SET state='queued',attempt=attempt+1,roster_version=(SELECT roster_version FROM chat_ai_sessions WHERE thread_id=? AND ai_id=?),updated_at=? WHERE id=?").run(job.thread_id,job.ai_id,now(),job.id);update(job,'','generating');void pump();return true;}
+  async function syncPersona(session, { path, method, document, draftId, key }) {
+    const staged = JSON.stringify({ ...document, operationKey: key });
+    db.prepare('INSERT INTO chat_persona_drafts VALUES(?,?,?,?,?) ON CONFLICT(account_key,remote_id) DO UPDATE SET document=excluded.document,base_version=excluded.base_version,updated_at=excluded.updated_at')
+      .run(session.key, draftId, staged, document.version || null, now());
+    const saved = await jsonRemote(path, {
+      admin: true, method, body: document, version: document.version, key, actor: session.key,
+    });
+    const fresh = await jsonRemote('/v2/personas/' + encodeURIComponent(saved.item.id), { admin: true });
+    check(fresh.item.version === saved.item.version, '服务器版本再次变化，请核对后保存。草稿已保留。', 409);
+    db.prepare('DELETE FROM chat_persona_drafts WHERE account_key=? AND remote_id=? AND document=?').run(session.key, draftId, staged);
+    // Listing agents has separate credentials. A temporary list failure must not undo a verified write.
+    const agentsRefreshed = await refreshAgents().then(() => true, () => false);
+    return { ...fresh, synced: true, agentsRefreshed };
+  }
   async function handle(session,req,res,url,json){
     const path=url.pathname,method=req.method;
     if(path==='/api/chat/ai'&&method==='GET'){try{json(res,await refreshAgents());}catch(e){json(res,{items:agents(),connected:false,error:e.message});}return true;}
@@ -122,15 +143,27 @@ export function createChatAI(db,config,{social,own,emit,publish,message}) {
       if(picture&&method==='GET'){const r=await remote('/v2/avatars/'+encodeURIComponent(decodeURIComponent(picture[1])),{admin:true});res.writeHead(200,{'Content-Type':'image/png','Cache-Control':'no-store'});res.end(Buffer.from(await r.arrayBuffer()));return true;}
       if(path==='/api/chat/admin/personas/drafts'&&method==='GET'){json(res,{items:db.prepare('SELECT remote_id AS id,document,base_version AS baseVersion,updated_at AS updatedAt FROM chat_persona_drafts WHERE account_key=?').all(session.key).map(r=>({...r,document:JSON.parse(r.document)}))});return true;}
       if(path==='/api/chat/admin/personas'&&method==='GET'){json(res,await jsonRemote('/v2/personas',{admin:true}));return true;}
-      if(path==='/api/chat/admin/personas/import'&&method==='POST'){const d=await readJson(req,12*1024*1024),key=req.headers['idempotency-key']||newId();db.prepare('INSERT INTO chat_persona_drafts VALUES(?,?,?,?,?) ON CONFLICT(account_key,remote_id) DO UPDATE SET document=excluded.document,base_version=excluded.base_version,updated_at=excluded.updated_at').run(session.key,d.id||'__import__',JSON.stringify(d),d.version||null,now());const value=await jsonRemote('/v2/personas/import',{admin:true,method:'POST',body:d,version:d.version,key,actor:session.key});const read=await jsonRemote('/v2/personas/'+encodeURIComponent(value.item.id),{admin:true});check(read.item.version===value.item.version,'服务器回读已变更，草稿保留。',409);db.prepare('DELETE FROM chat_persona_drafts WHERE account_key=? AND remote_id=?').run(session.key,d.id||'__import__');await refreshAgents();json(res,read);return true;}
+      if(path==='/api/chat/admin/personas/import'&&method==='POST'){
+        const document=await readJson(req,12*1024*1024);
+        json(res, await syncPersona(session, { path: '/v2/personas/import', method, document,
+          draftId: document.id || '__import__', key: req.headers['idempotency-key'] || newId() }));
+        return true;
+      }
       const p=/^\/api\/chat\/admin\/personas(?:\/([^/]+))?$/.exec(path);
       if(p&&method==='GET'&&p[1]){json(res,await jsonRemote('/v2/personas/'+encodeURIComponent(decodeURIComponent(p[1])),{admin:true}));return true;}
-      if(p&&['POST','PUT'].includes(method)){const d=await readJson(req,12*1024*1024),id=p[1]?decodeURIComponent(p[1]):d.id;const document={...d,id};db.prepare('INSERT INTO chat_persona_drafts VALUES(?,?,?,?,?) ON CONFLICT(account_key,remote_id) DO UPDATE SET document=excluded.document,base_version=excluded.base_version,updated_at=excluded.updated_at').run(session.key,id,JSON.stringify(document),d.version||null,now());const result=await jsonRemote('/v2/personas'+(p[1]?'/'+encodeURIComponent(id):''),{admin:true,method,body:document,version:d.version,key:req.headers['idempotency-key']||newId(),actor:session.key});const fresh=await jsonRemote('/v2/personas/'+encodeURIComponent(result.item.id),{admin:true});check(fresh.item.version===result.item.version,'人格在保存后再次变更，请重新读取；草稿已保留。',409);db.prepare('DELETE FROM chat_persona_drafts WHERE account_key=? AND remote_id=?').run(session.key,id);await refreshAgents();json(res,{...fresh,synced:true});return true;}
+      if(p&&['POST','PUT'].includes(method)){
+        const data=await readJson(req,12*1024*1024),id=p[1]?decodeURIComponent(p[1]):data.id;
+        check(typeof id==='string' && id.trim(), '请填写人格 ID。');
+        const document={...data,id};
+        json(res, await syncPersona(session, { path: '/v2/personas' + (p[1] ? '/' + encodeURIComponent(id) : ''),
+          method, document, draftId: id, key: req.headers['idempotency-key'] || newId() }));
+        return true;
+      }
     }
     return false;
   }
-  return {get configured(){return configured;},reconfigure(){configured=!!(settings.baseUrl&&settings.chatToken);if(configured)void refreshAgents().catch(()=>{});},agents,refreshAgents,prepare,queue,memberAIs,remember,retry,handle,invalidate,
-    stop(session,thread){own(session,thread);for(const job of db.prepare("SELECT j.* FROM chat_ai_jobs j JOIN chat_messages m ON m.id=j.source_id WHERE j.thread_id=? AND m.sender_key=? AND j.state IN('queued','running')").all(thread,session.key)){const running=active.get(job.id);if(running)running.controller.abort();else{db.prepare("UPDATE chat_ai_jobs SET state='canceled' WHERE id=?").run(job.id);update(job,'','stopped','已停止。');}}},
+  return {get configured(){return configured;},reconfigure(){configured=!!(settings.baseUrl&&settings.chatToken);if(configured)void refreshAgents().catch(()=>{});},agents,refreshAgents,prepare,queue,memberAIs,addAI,remember,retry,handle,invalidate,
+    stop(session,thread){own(session,thread);for(const job of db.prepare("SELECT j.* FROM chat_ai_jobs j JOIN chat_messages m ON m.id=j.source_id WHERE j.thread_id=? AND m.sender_key=? AND j.state IN('queued','running')").all(thread,session.key)){const running=active.get(job.id);if(running){running.stopReason='已停止回复，收到的文字已保留。';running.controller.abort();}else{db.prepare("UPDATE chat_ai_jobs SET state='canceled' WHERE id=?").run(job.id);update(job,'','stopped','已取消等待中的回复。');}}},
     decorate(item){if(!item.senderKey.startsWith('ai:'))return item;const a=db.prepare('SELECT * FROM chat_ai_agents WHERE id=?').get(item.senderKey.slice(3));return a?{...item,senderName:a.name,senderId:a.id,senderAvatar:a.avatar_url?'/api/chat/ai/'+a.id+'/avatar':null,ai:true,personaId:a.remote_id}:item;},
     close(){for(const [id,run] of active){const job=db.prepare('SELECT * FROM chat_ai_jobs WHERE id=?').get(id);if(job)update(job,run.text,'stopped','软件服务已关闭，收到的文字已保留。');run.controller.abort();}closed=true;clearInterval(timer);clearInterval(refreshTimer);}};
 }

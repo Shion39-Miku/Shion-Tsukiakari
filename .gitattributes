@@ -6,3 +6,5 @@
 *.ico binary
 *.woff2 binary
 *.wav binary
+# Keep upstream license notices as published.
+desktop/licenses/*.txt whitespace=-space-before-tab
