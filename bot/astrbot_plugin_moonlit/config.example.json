@@ -1,0 +1,19 @@
+{
+  "api_base": "http://127.0.0.1:4173",
+  "reader_token": "REPLACE_WITH_READER_TOKEN",
+  "writer_token": "REPLACE_WITH_WRITER_TOKEN",
+  "reviewer_token": "REPLACE_WITH_REVIEWER_TOKEN",
+  "notifier_token": "REPLACE_WITH_NOTIFIER_TOKEN",
+  "admin_identities": [],
+  "reminder_targets": [],
+  "state_path": "/AstrBot/data/moonlit-site",
+  "attachment_roots": ["/AstrBot/data"],
+  "poll_seconds": 5,
+  "chat_gateway": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 6198,
+    "provider_id": "dafeiyu/deepseek-flash",
+    "token_file": "/var/lib/astrbot/data/config/moonlit-chat-token.txt"
+  }
+}

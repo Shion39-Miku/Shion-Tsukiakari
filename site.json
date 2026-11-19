@@ -1,0 +1,22 @@
+{
+  "name": "月下花笺",
+  "browserTitle": "詩音の月光庭院",
+  "englishName": "MOONLIT LETTERS",
+  "logo": "/assets/moonmark.svg",
+  "heroImage": "/assets/moonlake.webp",
+  "heroCredit": "月夜湖畔 · 演示插画",
+  "motto": "愿我们在各自的夜里，\n仍能看见同一轮月亮。",
+  "demoLabel": "本地演示站",
+  "socials": { "bilibili": null, "steam": null, "x": null, "discord": null },
+  "about": {
+    "portrait": "/assets/portrait.webp",
+    "portraitAlt": "演示立绘，身着灰紫披肩的黑发少女",
+    "portraitCredit": "演示立绘 · 可替换",
+    "intro": "你好，我是花笺的守夜人。习惯把喜欢的东西收在一起，等夜深了再慢慢翻看。这里是一个装着音乐、游戏和猫猫的小角落。",
+    "likes": ["下雨时的窗", "耳机里的合成音色", "有余韵的故事", "猫睡觉的呼噜声"],
+    "dislikes": ["太刺眼的灯", "被剧透的结局", "闹铃响第二次"],
+    "listening": "《潮汐尽头》 · 雾岛声像",
+    "playing": "《月台拾光》 · 等下一班夜车",
+    "why": "在信息流里，喜欢的东西总被下一条盖过去。我想留一间自己的小房间，把它们放在看得见的位置，也给路过的人留一盏灯。"
+  }
+}

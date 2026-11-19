@@ -1,0 +1,30 @@
+name: Build and test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v3
+        with:
+          version: '11.25.0'
+          runtime: 'node@24.22.3'
+          install: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir desktop install --frozen-lockfile
+      - run: node desktop/node_modules/electron/install.js
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm package:desktop
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Tsukiakari-Windows
+          path: |
+            artifacts/Tsukiakari-*/Tsukiakari-*-Setup.exe
+            artifacts/Tsukiakari-*/Tsukiakari-*-Portable.exe
+          if-no-files-found: error

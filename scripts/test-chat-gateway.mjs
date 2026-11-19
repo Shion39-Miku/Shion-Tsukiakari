@@ -1,0 +1,10 @@
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+const bundled = join(homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe');
+const python = process.env.PYTHON_BIN || (existsSync(bundled) ? bundled : process.platform === 'win32' ? 'python' : 'python3');
+const child = spawn(python, [resolve('scripts/test_chat_gateway.py')], { stdio: 'inherit', windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+child.on('error', () => { console.error('请设置 PYTHON_BIN 为 Python 3.12 的路径；应用本身只需要 Node.js。'); process.exitCode = 1; });
+const [code] = await once(child, 'exit'); process.exitCode = code ?? 1;

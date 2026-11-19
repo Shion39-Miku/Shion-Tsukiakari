@@ -1,0 +1,32 @@
+[Unit]
+Description=Moonlit personal site
+After=network.target
+
+[Service]
+Type=simple
+User=moonlit
+Group=moonlit
+WorkingDirectory=/www/wwwroot/shion.wiki/current
+EnvironmentFile=/etc/moonlit/site.env
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=256
+Environment=UPLOAD_TEMP_DIR=/run/moonlit
+ExecStart=/opt/moonlit-node/bin/node --disable-warning=ExperimentalWarning server/index.mjs
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+RuntimeDirectory=moonlit
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/moonlit /run/moonlit
+MemoryMax=768M
+TasksMax=96
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

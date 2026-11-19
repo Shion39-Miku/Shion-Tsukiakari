@@ -1,0 +1,48 @@
+{
+  "name": "tsukiakari",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.10.0 <25"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.mjs",
+    "start:local": "node --disable-warning=ExperimentalWarning scripts/start-local.mjs",
+    "start:app": "node --disable-warning=ExperimentalWarning scripts/start-local.mjs --chat --app",
+    "start:desktop": "node scripts/start-desktop.mjs",
+    "start:chat-server": "node --disable-warning=ExperimentalWarning server/chat-index.mjs",
+    "package:desktop": "node --disable-warning=ExperimentalWarning scripts/package-desktop.mjs",
+    "check:desktop": "node --disable-warning=ExperimentalWarning scripts/check-release.mjs",
+    "check:desktop:portable": "node --disable-warning=ExperimentalWarning scripts/check-desktop-portable.mjs",
+    "check:desktop:social": "node --disable-warning=ExperimentalWarning scripts/check-tsukiakari.mjs",
+    "check:astrbot:live": "node --disable-warning=ExperimentalWarning scripts/check-astrbot-live.mjs",
+    "check:app": "node --disable-warning=ExperimentalWarning scripts/check-tsukiakari.mjs",
+    "package:app": "node --disable-warning=ExperimentalWarning scripts/package-chat-app.mjs",
+    "test:chat-gateway": "node scripts/test-chat-gateway.mjs",
+    "db:migrate": "node --disable-warning=ExperimentalWarning scripts/site.mjs migrate",
+    "db:seed": "node --disable-warning=ExperimentalWarning scripts/site.mjs seed",
+    "media:previews": "node --disable-warning=ExperimentalWarning scripts/site.mjs previews",
+    "admin:init": "node --disable-warning=ExperimentalWarning scripts/site.mjs admin",
+    "db:backup": "node --disable-warning=ExperimentalWarning scripts/site.mjs backup",
+    "db:restore": "node --disable-warning=ExperimentalWarning scripts/site.mjs restore",
+    "bot:demo": "node scripts/bot-demo.mjs",
+    "check:browser": "node --disable-warning=ExperimentalWarning scripts/check-browser.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs",
+    "build": "node --disable-warning=ExperimentalWarning scripts/build-production.mjs",
+    "media:verify": "node --disable-warning=ExperimentalWarning scripts/verify-media.mjs",
+    "backup:production": "node --disable-warning=ExperimentalWarning scripts/production-backup.mjs",
+    "bot:bridge-demo": "node --disable-warning=ExperimentalWarning scripts/bot-bridge-demo.mjs",
+    "media:gc": "node --disable-warning=ExperimentalWarning scripts/media-gc.mjs",
+    "brand:generate": "node scripts/generate-brand.mjs",
+    "backup:desktop": "node --disable-warning=ExperimentalWarning scripts/backup-desktop.mjs"
+  },
+  "dependencies": {
+    "busboy": "1.6.0",
+    "sharp": "0.35.5"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

@@ -1,0 +1,22 @@
+import assert from'node:assert/strict';
+import{test}from'node:test';
+import{mkdtemp,mkdir,writeFile,readFile,rm}from'node:fs/promises';
+import{tmpdir}from'node:os';
+import{join}from'node:path';
+import{randomBytes,randomUUID}from'node:crypto';
+import{once}from'node:events';
+import sharp from'sharp';
+import policy from'../desktop/policy.cjs';
+import{createApplication}from'../server/app.mjs';
+import{openDatabase,readConfig}from'../server/core.mjs';
+import{setAdmin}from'../server/auth.mjs';
+test('brand keeps complete legacy profiles, uses English new folders and transparent multi-size icons',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'tsukiakari-migration-'));try{assert.equal(policy.dataDirectory({appData:root}),join(root,'Tsukiakari'));const legacy=join(root,'HoshifuruYoruNi');await mkdir(legacy);await writeFile(join(legacy,'cookies-and-drafts'),'preserve');assert.equal(policy.dataDirectory({appData:root}),legacy);assert.equal(await readFile(join(policy.dataDirectory({appData:root}),'cookies-and-drafts'),'utf8'),'preserve');const portable=join(root,'portable');await mkdir(portable);assert.equal(policy.dataDirectory({portable,appData:root}),join(portable,'Tsukiakari-data'));await mkdir(join(portable,'星降る夜に-data'));assert.equal(policy.dataDirectory({portable,appData:root}),join(portable,'星降る夜に-data'));const p=JSON.parse(await readFile('desktop/package.json'));assert.equal(p.productName,'月明かり');assert.equal(p.name,'tsukiakari-desktop');assert.equal((await sharp('public/assets/brand/tsukiakari-512.png').metadata()).width,512);assert.equal((await sharp('desktop/tray.png').metadata()).width,32);assert.equal((await sharp('desktop/icon.png').stats()).isOpaque,false);const ico=await readFile('desktop/icon.ico');assert.equal(ico.readUInt16LE(2),1);assert.equal(ico.readUInt16LE(4),7);}finally{await rm(root,{recursive:true,force:true});}
+});
+test('software management verifies its own admin, persists defaults and never returns saved tokens',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'tsukiakari-admin-')),dbPath=join(dir,'chat.sqlite'),password=randomBytes(20).toString('hex');const db=openDatabase(dbPath);await setAdmin(db,'owner',password);db.close();let connection;
+ const server=await createApplication({...readConfig({envFile:false}),dbPath,seedDemo:false,ipGeoEnabled:false,baseUrl:'',secureCookie:false,astrbot:{},saveConnection:async c=>connection=c});server.listen(0,'127.0.0.1');await once(server,'listening');const base='http://127.0.0.1:'+server.address().port;
+ async function req(path,as,method='GET',value){const r=await fetch(base+path,{method,headers:{'Content-Type':'application/json',...(as?{Cookie:as.cookie,'X-CSRF-Token':as.csrf}:{}),'Idempotency-Key':randomUUID()},body:value===undefined?undefined:JSON.stringify(value)});return{status:r.status,body:await r.json(),response:r};}
+ async function login(username){const r=await req('/api/chat/login',null,'POST',{username,password});return{cookie:r.response.headers.getSetCookie().map(c=>c.split(';')[0]).join('; '),csrf:r.body.csrf};}
+ try{const owner=await login('owner');await req('/api/admin/accounts',owner,'POST',{username:'member',password});const member=await login('member');for(const path of['overview','groups','friends','service','personas'])assert.equal((await req('/api/chat/admin/'+path,member)).status,403);const token=randomBytes(32).toString('base64url'),adminToken=randomBytes(32).toString('base64url');assert.equal((await req('/api/chat/admin/service',owner,'PUT',{connection:{baseUrl:'http://external.invalid',chatToken:token,adminToken}})).status,400);assert.equal((await req('/api/chat/admin/service',owner,'PUT',{defaultSound:false,defaultTaskbar:false,defaultDesktop:true,connection:{baseUrl:'http://127.0.0.1:9/bridge',chatToken:token,adminToken}})).status,200);assert.equal(connection.chatToken,token);const r=await req('/api/chat/admin/service',owner);assert.equal(r.body.item.hasChatToken,true);assert.ok(!JSON.stringify(r.body).includes(token));const prefs=(await req('/api/chat/preferences',member)).body.item;assert.equal(prefs.sound,false);assert.equal(prefs.taskbar,false);assert.equal((await req('/api/chat/session',owner)).body.astrbotConfigured,true);assert.equal((await fetch(base+'/assets/brand/tsukiakari-64.png')).status,200);assert.equal((await fetch(base+'/assets/brand/../../../.env')).status,404);}finally{server.closeAllConnections();await new Promise(r=>server.close(r));await rm(dir,{recursive:true,force:true});}
+});

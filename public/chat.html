@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101321">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="application-name" content="月明かり">
+  <title>月明かり</title>
+  <link rel="icon" href="/assets/brand/tsukiakari-192.png" type="image/png">
+  <link rel="manifest" href="/chat.webmanifest">
+  <link rel="apple-touch-icon" href="/assets/brand/tsukiakari-192.png">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/admin.css">
+  <link rel="stylesheet" href="/chat.css">
+  <link rel="stylesheet" href="/chat-social.css">
+  <link rel="stylesheet" href="/tsukiakari.css">
+  <link rel="modulepreload" href="/ui.js">
+  <script type="module" src="/chat.js"></script>
+</head>
+<body class="chat-body">
+  <a class="skip-link" href="#conversation">跳到聊天内容</a>
+  <div id="app-boot" class="app-boot" aria-hidden="true"><img src="/assets/brand/tsukiakari-192.png" alt="" width="72" height="72"><strong>月明かり</strong><span>让相逢，留在星光里。</span></div>
+  <section id="app-login" class="app-login" aria-label="登录月明かり" hidden></section>
+  <div id="app-shell" class="app-shell" hidden>
+    <aside id="app-rail" class="app-rail" aria-label="应用导航"></aside>
+    <aside id="app-sidebar" class="app-sidebar" aria-label="对话与应用导航"></aside>
+    <button id="sidebar-shade" class="sidebar-shade" aria-label="收起导航" hidden></button>
+    <div class="app-workspace">
+      <header id="app-header" class="app-header"></header>
+      <main id="chat-view" class="chat-view">
+        <section id="conversation" class="conversation" tabindex="-1" aria-label="对话记录"><div id="message-list" class="message-list"></div></section>
+        <form id="composer" class="composer" aria-label="发送消息"></form>
+      </main>
+      <main id="library-view" class="app-scroll library-view" hidden aria-label="网站栏目"></main>
+      <section id="manage-view" class="manage-view" hidden aria-label="网站管理"><header id="manage-header"></header><main id="manage-main" class="app-scroll" tabindex="-1"></main></section>
+      <main id="accounts-view" class="app-scroll accounts-view" hidden aria-label="应用账号"></main>
+      <main id="settings-view" class="application-page" hidden aria-label="个人设置"></main>
+      <main id="software-view" class="application-page" hidden aria-label="软件管理"></main>
+      <aside id="conversation-details" class="conversation-details" aria-label="会话详情" hidden></aside>
+    </div>
+  </div>
+  <aside id="player" class="dock" aria-label="分享歌曲播放器"></aside>
+  <audio id="song-audio" preload="none"></audio>
+  <dialog id="app-dialog" class="app-dialog" aria-labelledby="app-dialog-title"></dialog>
+  <dialog id="detail-dialog" aria-labelledby="detail-title"></dialog>
+  <dialog id="image-dialog" class="image-dialog" aria-labelledby="image-title"></dialog>
+  <dialog id="manage-confirm-dialog" aria-labelledby="confirm-title"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <noscript><p class="frame noscript">请启用 JavaScript 以使用聊天应用。</p></noscript>
+  <script id="page-data" type="application/json"><!--PAGE_DATA--></script>
+</body>
+</html>

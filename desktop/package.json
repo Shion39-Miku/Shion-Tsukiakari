@@ -1,0 +1,14 @@
+{
+  "name": "tsukiakari-desktop",
+  "productName": "月明かり",
+  "version": "0.4.0",
+  "description": "月明かり · 月光庭院聊天与管理桌面应用",
+  "author": "Shion",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.cjs",
+  "devDependencies": {
+    "electron": "45.3.1",
+    "electron-builder": "26.18.0"
+  }
+}

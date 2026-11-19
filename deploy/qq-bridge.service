@@ -1,0 +1,28 @@
+[Unit]
+Description=LLBot QQ personal-account bridge
+After=network-online.target astrbot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qqbridge
+Group=qqbridge
+WorkingDirectory=/opt/qq-bridge/v8.3.2
+Environment=NODE_ENV=production
+Environment=HOME=/var/lib/qq-bridge
+Environment=NODE_OPTIONS=--max-old-space-size=384
+ExecStart=/opt/moonlit-node/bin/node --disable-warning=ExperimentalWarning llbot.js --protocol=linux
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/qq-bridge
+MemoryMax=768M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

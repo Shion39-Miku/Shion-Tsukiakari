@@ -1,0 +1,9 @@
+@charset "UTF-8";
+.desktop-titlebar{position:fixed;inset:0 0 auto;height:32px;z-index:9999;display:flex;align-items:center;gap:9px;padding:0 150px 0 13px;background:#11141f;color:#bdb0cb;border-bottom:1px solid #2a2c40;font:12px/1.2 "Segoe UI","Microsoft YaHei UI",sans-serif;letter-spacing:.12em;user-select:none;-webkit-app-region:drag}
+.desktop-titlebar img{display:block;opacity:.9}
+body.desktop-host{padding-top:32px}
+.desktop-host .app-shell,.desktop-host .app-login{height:calc(100dvh - 32px)}
+.desktop-host .app-boot{top:32px}
+.desktop-host .app-sidebar{padding-top:23px}
+.desktop-host #header{top:32px}
+@media(max-width:760px){.desktop-host .app-sidebar{top:32px}.desktop-host .sidebar-shade{top:32px}}

@@ -1,0 +1,11 @@
+import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { join } from 'node:path';
+import { prepareDesktop } from './prepare-desktop.mjs';
+const { desktop } = await prepareDesktop();
+const require = createRequire(join(desktop, 'package.json'));
+const environment = { ...process.env }; delete environment.ELECTRON_RUN_AS_NODE;
+const child = spawn(require('electron'), [desktop], { cwd: desktop, stdio: 'inherit', env: environment });
+child.on('error', (error) => { console.error(error.message); });
+const [code] = await once(child, 'exit'); process.exitCode = code || 0;

@@ -1,0 +1,11 @@
+name: moonlit_site
+display_name: 月下花笺网站
+version: v1.1.0
+author: Shion
+desc: 网站查询、附件草稿、管理员确认同步与可靠提醒；不修改人格
+astrbot_version: ">=4.0,<5"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram
+  - discord

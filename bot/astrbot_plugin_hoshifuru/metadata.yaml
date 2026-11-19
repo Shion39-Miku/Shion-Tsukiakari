@@ -1,0 +1,6 @@
+name: astrbot_plugin_hoshifuru
+display_name: 月明かり连接器
+desc: 独立聊天后端的人格权威接口、隔离会话与流式回复
+version: v0.3.0
+author: Shion
+repo: https://shion.wiki

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0b15">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="收着音乐、游戏和猫猫的月下小站。">
+  <title>詩音の月光庭院</title>
+  <link rel="icon" href="/assets/moonmark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="modulepreload" href="/ui.js">
+  <script type="module" src="/front.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+  <header class="site-header" id="header"><!--INITIAL_HEADER--></header>
+  <div id="night" class="night-layer" aria-hidden="true"></div>
+  <main id="main" tabindex="-1"></main>
+  <footer class="site-footer" id="footer"></footer>
+  <aside id="player" class="dock" aria-label="全站播放器"></aside>
+  <audio id="background-audio" preload="none" loop></audio>
+  <audio id="song-audio" preload="none"></audio>
+  <dialog id="detail-dialog" aria-labelledby="detail-title"></dialog>
+  <dialog id="image-dialog" class="image-dialog" aria-labelledby="image-title"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <noscript><p class="frame noscript">请启用 JavaScript 以浏览栏目和播放音乐。</p></noscript>
+  <script id="page-data" type="application/json"><!--PAGE_DATA--></script>
+</body>
+</html>
