@@ -13,7 +13,7 @@ const { build, Platform, Arch } = require('electron-builder');
 const version = JSON.parse(await readFile(join(desktop, 'package.json'), 'utf8')).version;
 const stamp = new Date().toISOString().replace(/[-:.]/g, '').replace('T', '-').slice(0, 17);
 const destination = previous?.directory || join(root, 'artifacts', 'Tsukiakari-'+version+'-' + stamp);
-if (!portableOnly) await mkdir(destination); process.env.CSC_IDENTITY_AUTO_DISCOVERY = 'false';
+if (!portableOnly) {await mkdir(dirname(destination),{recursive:true});await mkdir(destination);} process.env.CSC_IDENTITY_AUTO_DISCOVERY = 'false';
 const paths = await build({ projectDir: desktop, ...(portableOnly ? { prepackaged: join(destination, 'win-unpacked') } : {}), targets: Platform.WINDOWS.createTarget(portableOnly ? ['portable'] : ['nsis', 'portable'], Arch.x64), publish: 'never', config: {
   appId: 'wiki.shion.hoshifuru', productName: 'Tsukiakari', electronVersion: require('electron/package.json').version,
   electronDist: dirname(require('electron')), directories: { output: destination, buildResources: desktop },

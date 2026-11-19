@@ -13,6 +13,7 @@ import { openDatabase } from '../server/core.mjs';
 import { setAdmin } from '../server/auth.mjs';
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE?pathToFileURL(process.env.PLAYWRIGHT_MODULE):'playwright');
 const release = JSON.parse(await readFile('artifacts/desktop-app.json', 'utf8')), output = resolve('artifacts/desktop-check');
+await mkdir(output,{recursive:true});
 const folder = await mkdtemp(join(output, 'portable app with spaces ')), executable = join(folder, 'Tsukiakari.exe');
 await copyFile(release.files.find((f) => f.path.endsWith('Portable.exe')).path, executable);
 const dataDir = join(folder, 'Tsukiakari-data'), dbPath = join(dataDir, 'data/moonlit.sqlite'); await mkdir(join(dataDir, 'data'), { recursive: true });
