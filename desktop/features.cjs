@@ -10,10 +10,11 @@ function badgePng(count){const width=32,raw=Buffer.alloc((width*4+1)*width);cons
  const scale=3,total=digits.length*3*scale+(digits.length-1)*scale,start=Math.floor((32-total)/2);for(let d=0;d<bits.length;d++)for(let y=0;y<5;y++)for(let x=0;x<3;x++)if(bits[d][y*3+x]==='1')for(let yy=0;yy<scale;yy++)for(let xx=0;xx<scale;xx++){const at=(8+y*scale+yy)*(width*4+1)+1+(start+d*4*scale+x*scale+xx)*4;raw[at]=39;raw[at+1]=25;raw[at+2]=48;raw[at+3]=255;}
  function chunk(type,data){const name=Buffer.from(type),head=Buffer.alloc(4),tail=Buffer.alloc(4);head.writeUInt32BE(data.length);tail.writeUInt32BE(crc32(Buffer.concat([name,data])));return Buffer.concat([head,name,data,tail]);}const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(width);ihdr.writeUInt32BE(width,4);ihdr[8]=8;ihdr[9]=6;return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',ihdr),chunk('IDAT',deflateSync(raw)),chunk('IEND',Buffer.alloc(0))]);
 }
-function createDesktopFeatures(electron,{preferences,save,origin,authorize,iconPath,trayPath=iconPath}){
- const {app,BrowserWindow,Tray,Menu,Notification,nativeImage,ipcMain,dialog}=electron;
+function createDesktopFeatures(electron,{preferences,save,origin,authorize,iconPath,trayPath=iconPath,ask,checkUnfinished,log,onCancelQuit}){
+ const {app,BrowserWindow,Tray,Menu,Notification,nativeImage,ipcMain}=electron;
  const states=new Map(),nativeNotices=new Map();
- let tray,explicit=false,asking=false,dndCache={at:0,value:false},dndQuery,quitting=false,trayCount=0;
+ const approvedUnload = new Set();
+ let tray,explicit=false,asking=false,blockedExit=false,rememberExit=false,dndCache={at:0,value:false},dndQuery,quitting=false,trayCount=0;
  const trusted=event=>{try{return event.senderFrame===event.sender.mainFrame&&new URL(event.senderFrame.url).origin===origin();}catch{return false;}};
  async function identity(event){if(!trusted(event))throw Error('不接受此窗口的请求。');const window=BrowserWindow.fromWebContents(event.sender);const user=await authorize(window);if(!user)throw Error('请先登录。');return{window,user};}
  const show=window=>{if(!window||window.isDestroyed())window=[...states.keys()].map(id=>BrowserWindow.fromId(id)).find(w=>w&&!w.isDestroyed());if(!window)return;if(window.isMinimized())window.restore();window.show();window.focus();};
@@ -36,14 +37,132 @@ function createDesktopFeatures(electron,{preferences,save,origin,authorize,iconP
    if(!count)window.flashFrame(false);
   }
  }
- function ensureTray(){if(tray)return;tray=new Tray(nativeImage.createFromPath(trayPath).resize({width:20,height:20}));tray.setToolTip('月明かり');tray.setContextMenu(Menu.buildFromTemplate([{label:'打开月明かり',click:()=>show()},{label:'退出软件',click:()=>app.quit()}]));tray.on('double-click',()=>show());tray.on('click',()=>show());}
+ function ensureTray() {
+  if (tray && !tray.isDestroyed()) return true;
+  try {
+   tray = new Tray(nativeImage.createFromPath(trayPath).resize({ width: 20, height: 20 }));
+   trayCount = 0;
+   tray.setToolTip('月明かり');
+   tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开月明かり', click: () => show() }, { label: '退出软件', click: () => requestExit() }]));
+   tray.on('double-click', () => show());
+   tray.on('click', () => show());
+   return true;
+  } catch (error) {
+   tray?.destroy();
+   tray = null;
+   log('托盘未能创建：' + error.message);
+   return false;
+  }
+ }
+
+ function setCloseAction(action) {
+  const previous = preferences.closeAction;
+  preferences.closeAction = action;
+  try { save(); }
+  catch (error) { preferences.closeAction = previous; throw error; }
+ }
+
+ async function requestExit(remember = false) {
+  if (quitting || explicit || asking || blockedExit) return;
+  blockedExit = true;
+  try {
+   const windows = [...states.keys()].map(id => BrowserWindow.fromId(id)).filter(window => window && !window.isDestroyed());
+   const warnings = await Promise.all(windows.map(checkUnfinished));
+   const unfinished = windows[warnings.indexOf(true)];
+   if (unfinished) {
+    const answer = await ask(unfinished, {
+     title: '有内容需要保留',
+     message: '请先完成正在发送、上传或编辑的内容。',
+     detail: '仍然退出会中断这些操作。已保存的聊天和文字草稿会保留。',
+     actions: [
+      { id: 'cancel', label: '继续处理', tone: 'primary' },
+      { id: 'exit', label: '仍然退出', tone: 'danger' },
+     ],
+    });
+    if (answer.choice !== 'exit') { rememberExit = false; onCancelQuit(); return; }
+   }
+   rememberExit ||= remember;
+   blockedExit = false;
+   app.quit();
+  } finally { blockedExit = false; }
+ }
+
+ async function unblockExit(window, event) {
+  if (explicit && approvedUnload.has(window.id)) {
+   event.preventDefault();
+   return;
+  }
+  const exiting = explicit || blockedExit;
+  explicit = false;
+  if (blockedExit) return;
+  blockedExit = true;
+  try {
+   const answer = await ask(window, {
+    title: exiting ? '有内容需要保留' : '当前页面有未完成的操作',
+    message: '请先完成正在发送、上传或编辑的内容。',
+    detail: exiting ? '仍然退出会中断这些操作。已保存的聊天和文字草稿会保留。' : '当前页面仍然打开，可以继续处理。',
+    actions: [
+     { id: 'cancel', label: '继续处理', tone: 'primary' },
+     ...(exiting ? [{ id: 'exit', label: '仍然退出', tone: 'danger' }] : []),
+    ],
+   });
+   if (exiting && answer.choice === 'exit') {
+    approvedUnload.add(window.id);
+    blockedExit = false;
+    app.quit();
+   } else {
+    rememberExit = false;
+    approvedUnload.clear();
+    if (exiting) onCancelQuit();
+   }
+  } finally { blockedExit = false; }
+ }
+
+ async function chooseClose(window) {
+  let choice = preferences.closeAction || 'ask', remember = false;
+  if (choice === 'ask') {
+   ({ choice, remember } = await ask(window, {
+    title: '关闭月明かり',
+    message: '关闭窗口后，要继续接收消息吗？',
+    detail: '后台运行可从托盘重新打开。退出软件会关闭本地服务。',
+    remember: true,
+    actions: [
+     { id: 'cancel', label: '取消' },
+     { id: 'background', label: '后台运行', tone: 'primary' },
+     { id: 'exit', label: '退出软件', tone: 'danger' },
+    ],
+   }));
+  }
+  if (window.isDestroyed()) return;
+  if (choice === 'background') {
+   if (!ensureTray()) {
+    await ask(window, { title: '无法转入后台', message: '系统托盘暂不可用，窗口仍然打开。', actions: [{ id: 'ok', label: '知道了', tone: 'primary' }] });
+    return;
+   }
+   if (remember) setCloseAction(choice);
+   window.hide();
+   update();
+  } else if (choice === 'exit') {
+   asking = false;
+   await requestExit(remember);
+  }
+ }
+
  const windowHidden=window=>!window?.isVisible()||window.isMinimized();
  function attach(window){ensureTray();states.set(window.id,{count:0,threadId:null});window.on('closed',()=>{states.delete(window.id);update();});window.on('focus',()=>window.flashFrame(false));
   const visibility=()=>{if(!window.isDestroyed())window.webContents.send('hoshifuru:visibility',windowHidden(window));};
   for(const event of ['show','hide','minimize','restore'])window.on(event,visibility);
   window.on('query-session-end',()=>save());window.on('session-end',()=>{explicit=true;save();});
-  window.on('close',async event=>{if(explicit||quitting)return;event.preventDefault();if(asking)return;const action=preferences.closeAction||'ask';if(action==='background'){window.hide();update();return;}if(action==='exit'){app.quit();return;}
-   asking=true;try{const answer=await dialog.showMessageBox(window,{type:'question',title:'让星光继续陪伴',message:'关闭窗口后，要继续在后台接收消息吗？',detail:'后台运行会保留托盘入口、连接与消息提醒。',buttons:['后台运行','退出软件','取消'],defaultId:0,cancelId:2,checkboxLabel:'记住我的选择',checkboxChecked:false});if(answer.response===2)return;if(answer.checkboxChecked){preferences.closeAction=answer.response===0?'background':'exit';save();}if(answer.response===0){window.hide();update();}else app.quit();}finally{asking=false;}
+  window.on('close', async event => {
+   if (explicit || quitting) return;
+   event.preventDefault();
+   if (asking || blockedExit) return;
+   asking = true;
+   try { await chooseClose(window); }
+   catch (error) {
+    log('关闭窗口未完成：' + error.message);
+    await ask(window, { title: '窗口仍然打开', message: '暂时无法保存关闭偏好。可以重试，或取消记住选择。', actions: [{ id: 'ok', label: '知道了', tone: 'primary' }] });
+   } finally { asking = false; }
   });
  }
  async function dndAllowsSound(){
@@ -57,7 +176,7 @@ function createDesktopFeatures(electron,{preferences,save,origin,authorize,iconP
  }
  ipcMain.handle('hoshifuru:preferences:get',event=>{if(!trusted(event))throw Error('不接受此窗口。');return{closeAction:preferences.closeAction||'ask'};});
  ipcMain.handle('hoshifuru:visibility',event=>trusted(event)&&windowHidden(BrowserWindow.fromWebContents(event.sender)));
- ipcMain.handle('hoshifuru:preferences:set',(event,value)=>{if(!trusted(event)||!['ask','background','exit'].includes(value?.closeAction))throw Error('关闭行为无效。');preferences.closeAction=value.closeAction;save();return{closeAction:value.closeAction};});
+ ipcMain.handle('hoshifuru:preferences:set',(event,value)=>{if(!trusted(event)||!['ask','background','exit'].includes(value?.closeAction))throw Error('关闭行为无效。');setCloseAction(value.closeAction);return{closeAction:value.closeAction};});
  ipcMain.handle('hoshifuru:context',async(event,value)=>{const{window,user}=await identity(event);if(value.threadId!==null&&!/^[0-9a-f-]{36}$/i.test(value.threadId||''))return;const s=states.get(window.id);if(s){s.accountKey=user.key;s.threadId=value.threadId;}return{ok:true};});
  ipcMain.handle('hoshifuru:unread',async(event,value)=>{
   if(!trusted(event))return;
@@ -88,6 +207,16 @@ function createDesktopFeatures(electron,{preferences,save,origin,authorize,iconP
   }update();return{notified:true,sound:!!prefs.sound&&allowed,taskbar:!!prefs.taskbar&&allowed};
  });
  app.on('before-quit',()=>{explicit=true;});
- return{attach,show,update,beginExit(){explicit=true;},cancelQuit(){explicit=false;},close(){quitting=true;for(const n of nativeNotices.values())n.close();nativeNotices.clear();if(tray){tray.destroy();tray=null;}},diagnostics(){return{tray:!!tray,unread:unread(),closeAction:preferences.closeAction||'ask',windows:states.size,notifications:nativeNotices.size};}};
+ return {
+  attach, show, requestExit, unblockExit,
+  saveExitChoice() {
+   if (rememberExit) {
+    rememberExit = false;
+    try { setCloseAction('exit'); } catch (error) { log('退出偏好未保存：' + error.message); }
+   }
+  },
+  close(){quitting=true;for(const n of nativeNotices.values())n.close();nativeNotices.clear();if(tray){tray.destroy();tray=null;}},
+  diagnostics(){return{tray:!!tray,unread:unread(),closeAction:preferences.closeAction||'ask',windows:states.size,notifications:nativeNotices.size};},
+ };
 }
 module.exports={createDesktopFeatures,badgePng,WINDOWS_NOTIFICATION_QUERY};

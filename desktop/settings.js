@@ -10,7 +10,7 @@ form.addEventListener('submit', async (event) => {
   try {
     const result = await window.modelSettings.save({ apiBase: document.querySelector('#api-base').value, model: document.querySelector('#model').value, apiKey: document.querySelector('#api-key').value });
     if (result.ok) document.querySelector('#api-key').value = '';
-    statusLine.textContent = result.error || (result.canceled ? '尚未保存。' : '已保存，正在重新启动…');
+    statusLine.textContent = result.error || (result.canceled ? '尚未保存。' : '已保存，重启后生效。');
   } catch { statusLine.textContent = '保存失败，输入仍保留，请重试。'; }
   finally { button.disabled = false; }
 });

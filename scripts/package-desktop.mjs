@@ -18,7 +18,8 @@ const paths = await build({ projectDir: desktop, ...(portableOnly ? { prepackage
   appId: 'wiki.shion.hoshifuru', productName: 'Tsukiakari', electronVersion: require('electron/package.json').version,
   electronDist: dirname(require('electron')), directories: { output: destination, buildResources: desktop },
   copyright: 'Copyright © 2026 Shion', asar: true, npmRebuild: false, buildDependenciesFromSource: false,
-  files: ['main.cjs', 'preload.cjs', 'policy.cjs','features.cjs', 'settings-preload.cjs', 'settings.html', 'settings.css', 'settings.js', 'splash.html', 'splash.css', 'icon.ico', 'icon.png','tray.png', 'package.json'],
+  files: ['main.cjs', 'policy.cjs', 'features.cjs', 'window-prompts.cjs', '.generated/window-preload.cjs',
+    'settings.html', 'settings.css', 'settings.js', 'splash.html', 'splash.css', 'icon.ico', 'icon.png', 'tray.png', 'package.json'],
   extraResources: [{ from: join(output, 'backend'), to: 'backend' }, {from:join(output,'seed/moonlit.sqlite'),to:'seed/moonlit.sqlite'},{from:join(output,'seed/website.sqlite'),to:'seed/website.sqlite'}, { from: join(output, 'initial-model.json'), to: 'initial-model.json' },{from:join(output,'initial-astrbot.json'),to:'initial-astrbot.json'}],
   // electron-builder deliberately filters nested node_modules in extraResources.
   // These are dependencies of the SEPARATE Node backend, not Electron modules.

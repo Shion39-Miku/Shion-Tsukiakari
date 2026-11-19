@@ -16,7 +16,9 @@
   <link rel="stylesheet" href="/chat.css">
   <link rel="stylesheet" href="/chat-social.css">
   <link rel="stylesheet" href="/tsukiakari.css">
+  <link rel="stylesheet" href="/ui-dialog.css">
   <link rel="modulepreload" href="/ui.js">
+  <script src="/ui-dialog.js" defer></script>
   <script type="module" src="/chat.js"></script>
 </head>
 <body class="chat-body">
@@ -49,6 +51,7 @@
   <aside id="player" class="dock" aria-label="分享歌曲播放器"></aside>
   <audio id="song-audio" preload="none"></audio>
   <dialog id="app-dialog" class="app-dialog" aria-labelledby="app-dialog-title"></dialog>
+  <dialog id="contacts-dialog" class="app-dialog contacts-dialog" aria-labelledby="contacts-title"></dialog>
   <dialog id="detail-dialog" aria-labelledby="detail-title"></dialog>
   <dialog id="image-dialog" class="image-dialog" aria-labelledby="image-title"></dialog>
   <dialog id="manage-confirm-dialog" aria-labelledby="confirm-title"></dialog>

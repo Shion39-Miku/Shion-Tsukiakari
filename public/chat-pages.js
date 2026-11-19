@@ -5,7 +5,7 @@ export const managementSections={overview:'软件概览',users:'用户管理',gr
 export function createPages({request,account,navigate,social,showAccounts,openModal,connection}){
  const cache=new Map();
  function layout(root,kind,section){const labels=kind==='settings'?personalSections:managementSections;const nav=el('nav',{class:'page-nav','aria-label':kind==='settings'?'个人设置栏目':'软件管理栏目'});nav.append(el('p',{class:'page-nav-label'},kind==='settings'?'个人设置':'软件管理'));for(const[key,label]of Object.entries(labels)){const b=action(label,undefined,{'aria-current':section===key?'page':null});b.onclick=()=>navigate(kind,{section:key});nav.append(b);}const slot=el('div',{class:'page-content'});root.replaceChildren(nav,slot);return slot;}
- function surface(kind,section,title,children){const key=kind+':'+section;const fragment=el('section',{class:'page-section'},el('header',{class:'page-heading'},el('h2',{},title)),children);if(section!=='connection'&&(kind==='settings'||['personas','service'].includes(section)))cache.set(key,fragment);return fragment;}
+ function surface(kind,section,title,children){const key=kind+':'+section;const fragment=el('section',{class:'page-section'},el('header',{class:'page-heading'},el('h2',{},title)),children);if(!['connection','close'].includes(section)&&(kind==='settings'||['personas','service'].includes(section)))cache.set(key,fragment);return fragment;}
  async function render(root,kind,section,supplied,isCurrent){const slot=layout(root,kind,section),key=kind+':'+section;
   if(supplied){slot.append(surface(kind,section,supplied.title,supplied.children));return;}
   if(cache.has(key)){slot.append(cache.get(key));return;}
@@ -19,7 +19,7 @@ export function createPages({request,account,navigate,social,showAccounts,openMo
     if(section==='memory')return await social().memories(present);
     if(['appearance','notifications','close'].includes(section))return await social().settings(section,present);
     if(section==='connection'){const s=await request('/api/chat/session');if(!isCurrent())return;present('连接状态',el('dl',{class:'info-list'},el('dt',{},'聊天服务'),el('dd',{'data-connection-status':''},{online:'实时消息已连接',connecting:'正在连接',offline:'实时消息已断开 · 正在重连'}[connection()]),el('dt',{},'AI 接入'),el('dd',{},s.astrbotConfigured?'AstrBot · 人格由服务器管理':s.aiReady?'独立模型模式':'尚未配置')),account().role==='admin'&&(()=>{const b=action('配置软件服务与 AI','arrow');b.onclick=()=>navigate('software',{section:'service'});return b;})());return;}
-    present('月明かり',el('img',{src:'/assets/brand/tsukiakari-192.png',width:88,height:88,alt:'月明かり应用图标',class:'about-icon'}),el('p',{class:'about-name'},'Tsukiakari · 0.4.1'),el('p',{class:'muted'},'好友私聊、邀请群聊和 AstrBot 人格。'),el('a',{href:'https://github.com/Shion39-Miku/Shion-Tsukiakari',target:'_blank',rel:'noreferrer'},'源码与使用教程'));return;
+    present('月明かり',el('img',{src:'/assets/brand/tsukiakari-192.png',width:88,height:88,alt:'月明かり应用图标',class:'about-icon'}),el('p',{class:'about-name'},'Tsukiakari · 0.4.2'),el('p',{class:'muted'},'好友私聊、邀请群聊和 AstrBot 人格。'),el('a',{href:'https://github.com/Shion39-Miku/Shion-Tsukiakari',target:'_blank',rel:'noreferrer'},'源码与使用教程'));return;
    }
    if(section==='users'){slot.replaceChildren(surface(kind,section,'用户管理',[]));await showAccounts(slot);return;}
    if(section==='personas')return await social().personaList(present);

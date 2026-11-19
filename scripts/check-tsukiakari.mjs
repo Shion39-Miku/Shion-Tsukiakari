@@ -8,6 +8,7 @@ import{homedir}from'node:os';
 import{pathToFileURL}from'node:url';
 import{DatabaseSync}from'node:sqlite';
 import{checkChatResilience}from'./check-chat-resilience.mjs';
+import{checkDesktopPolish,checkStartupPrompt}from'./check-desktop-polish.mjs';
 const root=resolve('.'),out=resolve(process.env.TSUKIAKARI_QA_OUTPUT||'artifacts/tsukiakari-check'),screens=resolve(process.env.TSUKIAKARI_QA_SCREENSHOTS||'docs/images');await mkdir(out,{recursive:true});await mkdir(screens,{recursive:true});
 const data=await mkdtemp(join(out,'demo-')),password=randomBytes(20).toString('hex');
 const personas=new Map([['demo-fish',{id:'demo-fish',name:'知遥 · 演示人格',description:'用于软件截图的演示人格',systemPrompt:'这是演示环境。以简洁的中文交流。',beginDialogs:[],firstMessage:'晚上好。月色很安静，我在这里。',exampleDialogue:'',extensions:{},enabled:true,version:'v1',avatar:false}]]);let revision=1,calls=0,personaAllowed=true;
@@ -26,7 +27,8 @@ const{_electron}=await import(process.env.PLAYWRIGHT_MODULE?pathToFileURL(proces
 const environment={...process.env,NODE_PATH:'',TSUKIAKARI_DESKTOP_DATA:data,TSUKIAKARI_ASTRBOT_FILE:configFile,TSUKIAKARI_MODEL_FILE:join(data,'no-model.json')};delete environment.ELECTRON_RUN_AS_NODE;
 const exe=process.env.TSUKIAKARI_QA_EXECUTABLE;let app,page,member,aiId,groupId,friendId;const report={at:new Date().toISOString(),mode:exe?'packaged':'source',checks:[],errors:[],screenshots:[]};
 const pass=s=>{report.checks.push(s);console.log('通过：'+s);};const wait=ms=>new Promise(r=>setTimeout(r,ms));
-async function boot(){app=await _electron.launch({executablePath:exe||join(root,'desktop/node_modules/electron/dist/electron.exe'),args:exe?[]:[join(root,'desktop')],env:environment,timeout:50000});page=await app.firstWindow();page.setDefaultTimeout(20000);page.on('pageerror',e=>report.errors.push(e.message));await page.waitForURL(/http:\/\/127\.0\.0\.1:\d+\/chat/);await page.locator('.desktop-titlebar').waitFor();}
+function launch(env){return _electron.launch({executablePath:exe||join(root,'desktop/node_modules/electron/dist/electron.exe'),args:exe?[]:[join(root,'desktop')],env,timeout:50000});}
+async function boot(){app=await launch(environment);page=await app.firstWindow();page.setDefaultTimeout(20000);page.on('pageerror',e=>report.errors.push(e.message));await page.waitForURL(/http:\/\/127\.0\.0\.1:\d+\/chat/);await page.locator('.desktop-titlebar').waitFor();}
 async function api(path,method='GET',json,p=page){return p.evaluate(async({path,method,json})=>{const s=await(await fetch('/api/chat/session')).json();const r=await fetch(path,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':s.csrf,'Idempotency-Key':crypto.randomUUID()},body:json===undefined?undefined:JSON.stringify(json)});return{status:r.status,body:await r.json()};},{path,method,json});}
 async function nav(label){await page.locator('#app-rail').getByRole('button',{name:label,exact:true}).click();}
 async function shot(name){
@@ -36,7 +38,14 @@ async function shot(name){
  report.screenshots.push('docs/images/'+name+'.png');
 }
 async function send(text){await page.getByRole('textbox',{name:'聊天消息',exact:true}).fill(text);await page.getByRole('button',{name:'发送消息',exact:true}).click();}
-async function closeModal(){if(await page.locator('#app-dialog[open]').count())await page.getByRole('button',{name:'关闭对话框',exact:true}).click();}
+const contactTab=(target,label)=>target.locator('#contacts-dialog[open], #app-dialog[open]').getByText(label,{exact:true});
+async function closeModal(){
+ const open=page.locator('#app-dialog[open], #contacts-dialog[open]');
+ if(await open.count()){
+  await open.getByRole('button',{name:'关闭对话框',exact:true}).click();
+  await open.waitFor({state:'hidden'});
+ }
+}
 try{
  await boot();await page.getByRole('button',{name:'创建管理员',exact:true}).waitFor();await page.getByLabel('账号',{exact:true}).fill('demo_owner');await page.getByLabel('密码',{exact:true}).fill(password);await page.getByRole('button',{name:'创建管理员',exact:true}).click();await page.locator('#app-shell:not([hidden])').waitFor();assert.equal(await page.title(),'月明かり');assert.equal((await api('/api/chat/bootstrap')).body.available,false);assert.equal(await page.locator('#background-audio').count(),0);
  const native=await app.evaluate(({app,BrowserWindow})=>({name:app.getName(),...global.__hoshifuruDesktop,features:global.__hoshifuruDesktop.features(),web:BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences().sandbox}));assert.equal(native.name,'月明かり');assert.equal(native.features.tray,true);assert.equal(native.web,true);assert.notEqual(native.origin,native.websiteOrigin);pass('干净安装首次设置管理员，两套独立后端可用；原生窗口、托盘与无背景音乐正确');
@@ -55,21 +64,25 @@ try{
  await member.locator('#app-header').getByRole('button',{name:'返回聊天',exact:true}).click();
  await page.bringToFront();
  await page.getByRole('button',{name:'通讯录',exact:true}).click();
- await page.getByRole('button',{name:'搜索用户',exact:true}).click();
+ await contactTab(page,'搜索用户').click();
  await page.getByLabel('用户ID、账号或名称',{exact:true}).fill(ms.profile.id);
  await page.getByRole('button',{name:'搜索',exact:true}).click();
  await page.getByRole('button',{name:'添加好友',exact:true}).click();
  await page.getByRole('button',{name:'已申请',exact:true}).waitFor();await closeModal();
  await member.bringToFront();
  await member.getByRole('button',{name:'通讯录',exact:true}).click();
- await member.getByRole('button',{name:'好友申请',exact:true}).click();
+ await contactTab(member,'好友申请').click();
  await member.getByRole('button',{name:'接受',exact:true}).click();
  await member.getByText('已添加为好友',{exact:true}).waitFor();
  await member.getByRole('button',{name:'关闭对话框',exact:true}).click();
  const dm=(await api('/api/chat/threads','POST',{kind:'direct',members:[ms.key]})).body.item;friendId=dm.id;await api('/api/chat/threads/'+dm.id+'/messages','POST',{text:'今晚想听一首安静的歌。'},member);await api('/api/chat/threads/'+dm.id+'/messages','POST',{text:'好呀，晚一点我们去月光庭院看看。'});
  const group=(await api('/api/chat/threads','POST',{kind:'group',title:'月下茶话 · 演示群',members:[ms.key]})).body.item;groupId=group.id;
  assert.equal((await api('/api/chat/threads/'+groupId,'GET',undefined,member)).status,404);
- await member.getByRole('button',{name:'申请与邀请',exact:true}).click();
+ if(await member.getByRole('button',{name:'申请与邀请',exact:true}).count())await member.getByRole('button',{name:'申请与邀请',exact:true}).click();
+ else {
+  await member.getByRole('button',{name:'通讯录',exact:true}).click();
+  await contactTab(member,'群邀请').click();
+ }
  await member.getByRole('button',{name:'接受邀请',exact:true}).click();
  await member.getByRole('button',{name:'打开群聊',exact:true}).click();
  await member.locator('#app-header .header-identity').filter({hasText:'群聊'}).waitFor();
@@ -141,6 +154,14 @@ try{
   assert.equal((await api('/api/admin/session')).status,200);
   pass('真实独立网站会话过期后可单独重新连接');
  }
- await app.close();app=null;await boot();await page.locator('#app-shell:not([hidden])').waitFor();assert.equal((await api('/api/chat/session')).body.username,'demo_owner');assert.ok((await api('/api/chat/threads')).body.items.some(t=>t.id===groupId));pass('退出与重启保留账号、会话、资料、群聊和加密连接');
+ const testedQuit=process.env.TSUKIAKARI_QA_POLISH!=='0'
+  &&await checkDesktopPolish({app,page,member,nav,api,shot,report,data,aiId});
+ if(!testedQuit)await app.close();
+ app=null;await boot();await page.locator('#app-shell:not([hidden])').waitFor();assert.equal((await api('/api/chat/session')).body.username,'demo_owner');assert.ok((await api('/api/chat/threads')).body.items.some(t=>t.id===groupId));pass('退出与重启保留账号、会话、资料、群聊和加密连接');
+ if(testedQuit){
+  const draft=await page.evaluate(()=>Object.keys(localStorage).some(key=>key.startsWith('chat-input:')&&localStorage.getItem(key)==='关闭或恢复窗口时的演示草稿'));
+  assert.equal(draft,true);
+  await app.close();app=null;await checkStartupPrompt({launch,environment,out,report});
+ }
 }catch(e){report.failure=e.stack;if(page&&!page.isClosed())await page.screenshot({path:join(out,'failure.png')}).catch(()=>{});throw e;}
 finally{if(app)await app.close().catch(()=>{});bot.closeAllConnections();await new Promise(r=>bot.close(r));await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));console.log('报告：'+join(out,'report.json'));}

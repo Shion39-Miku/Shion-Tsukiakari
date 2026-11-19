@@ -2,8 +2,9 @@ import { action, el, showStatus, toast } from './ui.js';
 
 const editors = new Set();
 const ownedVersions = new Map();
-let manager;
+let manager, refreshEditors;
 const connected = () => [...editors].filter((editor) => editor.root.isConnected);
+export const hasDraftWork = () => Boolean(manager?.running || connected().some(editor => editor.dirty || editor.saving));
 function notify() { manager?.reflect(); }
 
 export function draftControls({ root, initial, auth, save, status, restore, synced, group }) {
@@ -14,7 +15,7 @@ export function draftControls({ root, initial, auth, save, status, restore, sync
   group ||= root.closest('[data-settings-mode]') ? 'settings' : undefined;
   const editor = {
     root, group, status,
-    get dirty() { return dirty; }, get savedItem() { return saved; },
+    get dirty() { return dirty; }, get saving() { return busy; }, get savedItem() { return saved; },
     get version() { return Math.max(saved?.version || 0, group ? ownedVersions.get(group) || 0 : 0); },
     validate() {
       const invalid = [...root.querySelectorAll('input,textarea,select')].find((input) => input.willValidate && !input.checkValidity());
@@ -50,7 +51,7 @@ export function draftControls({ root, initial, auth, save, status, restore, sync
     state.dataset.state = dirty ? 'dirty' : saved?.status || 'synced';
     save.disabled = busy;
     batch.textContent = saved?.batchId ? '批次 ' + saved.batchId : '';
-    notify();
+    if (root.isConnected) notify();
   }
   root.addEventListener('input', () => { dirty = true; reflect(); });
   root.addEventListener('change', () => { dirty = true; reflect(); });
@@ -58,9 +59,12 @@ export function draftControls({ root, initial, auth, save, status, restore, sync
   editors.add(editor);
   // Several review cards are built before their parent is attached. Pruning
   // during construction would discard every new editor except the last one.
-  reflect(); setTimeout(() => {
+  reflect();
+  refreshEditors ??= setTimeout(() => {
+    refreshEditors = undefined;
     for (const old of editors) if (!old.root.isConnected) editors.delete(old);
-    notify(); manager?.refresh().catch(() => {});
+    notify();
+    manager?.refresh().catch(() => {});
   }, 0);
   return editor;
 }
@@ -136,7 +140,7 @@ export function globalDraftBar({ auth, locate }) {
     showStatus(feedback, '同步完成，共 ' + result.items.length + ' 项。刷新前台即可查看。', 'success');
     toast('同步完成，刷新前台查看');
   }));
-  manager = { reflect, refresh, requestSave: () => save.click() };
+  manager = { reflect, refresh, get running() { return busy; }, requestSave: () => save.click() };
   refresh().catch((error) => showStatus(feedback, error.message, 'error'));
   return view;
 }

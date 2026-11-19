@@ -1,0 +1,58 @@
+.tsuki-dialog {
+  box-sizing: border-box;
+  color: #eee6f2;
+  background: #1c1d2b;
+  border: 1px solid #4a3e55;
+  border-radius: 17px;
+  box-shadow: 0 22px 70px #080811a6;
+  max-inline-size: calc(100vw - 24px);
+  max-block-size: calc(100dvh - 44px);
+  padding: 0;
+  animation: none;
+}
+.tsuki-dialog::backdrop {
+  background: #0a0a14a6;
+  backdrop-filter: none;
+  animation: tsuki-backdrop-in 200ms ease-out;
+}
+.tsuki-dialog[data-closing]::backdrop {
+  animation: tsuki-backdrop-out 180ms ease-in forwards;
+}
+@keyframes tsuki-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes tsuki-backdrop-out { from { opacity: 1; } to { opacity: 0; } }
+
+.tsuki-native-prompt {
+  inline-size: min(476px, calc(100vw - 28px));
+  font: 15px/1.65 "Noto Sans SC", "Microsoft YaHei UI", "Yu Gothic UI", system-ui, sans-serif;
+  color-scheme: dark;
+  overflow: auto;
+}
+.tsuki-prompt-content { padding: clamp(16px, 4vw, 26px); }
+.tsuki-prompt-header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.tsuki-prompt-header h2 { margin: 0; color: #f4e6f1; font-size: 21px; line-height: 1.45; font-weight: 650; }
+.tsuki-prompt-copy { margin: 12px 0; overflow-wrap: anywhere; }
+.tsuki-prompt-note { margin: 9px 0; color: #bfb1ca; white-space: pre-line; overflow-wrap: anywhere; }
+.tsuki-prompt-remember {
+  display: flex; align-items: center; gap: 9px; width: fit-content;
+  min-height: 36px; margin-top: 12px; color: #dfcde4; cursor: pointer;
+}
+.tsuki-prompt-remember input { width: 17px; height: 17px; accent-color: #e2b5d5; }
+.tsuki-prompt-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 17px; }
+.tsuki-native-prompt button {
+  color: #ece0ef; font: inherit; font-size: 14px; font-weight: 550;
+  cursor: pointer; padding: 6px 12px; min-height: 39px; border-radius: 9px;
+  border: 1px solid #54465f; background: #282437;
+}
+.tsuki-native-prompt button:hover { background: #393047; }
+.tsuki-native-prompt .prompt-primary { background: #e3bed8; border-color: #e3bed8; color: #291e33; }
+.tsuki-native-prompt .prompt-primary:hover { background: #f0cde7; }
+.tsuki-native-prompt .prompt-danger { color: #f4c6d0; }
+.tsuki-native-prompt button:focus-visible, .tsuki-native-prompt input:focus-visible { outline: 2px solid #d1b5e8; outline-offset: 2px; }
+.tsuki-native-prompt .prompt-close { flex: none; font-size: 22px; width: 38px; min-height: 38px; padding: 0; line-height: 1; }
+.tsuki-native-prompt[data-closing] { pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tsuki-dialog::backdrop, .tsuki-dialog[data-closing]::backdrop { animation: none; }
+}
+.reduce-motion .tsuki-dialog::backdrop, .reduce-motion .tsuki-dialog[data-closing]::backdrop,
+.tsuki-native-prompt[data-static]::backdrop { animation: none; }

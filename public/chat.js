@@ -5,6 +5,7 @@ import { messageView } from './chat-render.js';
 import { trackRoute } from './activity.js';
 import { createSocialUI,personAvatar } from './chat-social.js';
 import {createPages,personalSections,managementSections} from './chat-pages.js';
+import { hasDraftWork } from './draft-controls.js';
 
 const name = '月明かり';
 document.title = name;
@@ -12,6 +13,7 @@ const shell = document.querySelector('#app-shell'), loginStage = document.queryS
 const sidebar = document.querySelector('#app-sidebar'), header = document.querySelector('#app-header');
 const conversation = document.querySelector('#conversation'), list = document.querySelector('#message-list'), composer = document.querySelector('#composer');
 const dialog = document.querySelector('#app-dialog');
+const popup = TsukiakariDialogs.bind(dialog);
 const connectionNotice = document.querySelector('#chat-connection');
 const jumpToLatest = document.querySelector('#chat-latest');
 const panels = Object.fromEntries(['chat', 'library', 'manage', 'accounts','settings','software'].map((key) => [key, document.querySelector('#' + key + '-view')]));
@@ -28,8 +30,14 @@ let syncingNotices = false;
 const seenNotices = new Set();
 let pageSection='profile',threadKind='all',threadQuery='',sidebarAccount,railProfile,headerSignature;
 const scrollPositions=new Map(), threadRows=new Map();
+const filterOrder = [['all', '全部'], ['ai', 'AI'], ['direct', '好友'], ['group', '群聊']];
+const filterScroll = new Map();
+let threadsLoaded = false, threadListError = false;
+const nativeTextareaSizing = CSS.supports('field-sizing: content');
 const details=document.querySelector('#conversation-details');
 const windowHidden = () => document.hidden || nativeHidden;
+window.hoshifuruDesktop?.setClosingGuard?.(() =>
+  Boolean(activeSendTicket || [...inputDrafts.values()].some(draft => draft.files.length) || hasDraftWork()));
 try{document.documentElement.dataset.density=localStorage.getItem('tsukiakari-density')||'comfortable';}catch{}
 
 async function request(path, options = {}) {
@@ -65,7 +73,7 @@ const socialUI=createSocialUI({request,account:()=>session,dialog,openModal,open
 const pages=createPages({request,account:()=>session,navigate,social:()=>socialUI,showAccounts,openModal,connection:()=>connectionState});
 function openPage(section,title,...children){if(dialog.open)dialog.close();details.hidden=true;return navigate(['personas'].includes(section)?'software':'settings',{section,surface:{title,children}});}
 function openDetails(title,...children){const close=iconButton('close','关闭会话详情');close.onclick=()=>details.hidden=true;details.replaceChildren(el('header',{class:'details-heading'},el('h2',{},title),close),...children.flat(Infinity).filter(v=>v!==false&&v!=null));details.hidden=false;close.focus();}
-addEventListener('keydown',e=>{if(e.key==='Escape'&&!dialog.open&&!details.hidden){details.hidden=true;header.querySelector('[aria-label="查看群成员"]')?.focus();}});
+addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.querySelector('dialog[open]')&&!details.hidden){details.hidden=true;header.querySelector('[aria-label="查看群成员"]')?.focus();}});
 function appBrand() {
   return el('div', { class: 'app-brand' }, image('/assets/brand/tsukiakari-192.png', '', { width: 41, height: 41, loading: 'eager' }),
     el('div', {}, el('strong', {}, name), el('small', {}, 'TSUKIAKARI')));
@@ -75,12 +83,12 @@ function closeSidebar() { document.body.classList.remove('sidebar-open'); sideba
 document.querySelector('#sidebar-shade').onclick = closeSidebar;
 function openModal(title, ...children) {
   dialog.classList.remove('wide-dialog');
-  const close = iconButton('close', '关闭对话框'); close.onclick = () => dialog.close();
+  const close = iconButton('close', '关闭对话框'); close.onclick = () => popup.close();
   dialog.replaceChildren(el('div', { class: 'app-dialog-content' }, el('header', { class: 'app-dialog-heading' }, el('h2', { id: 'app-dialog-title' }, title), close), children));
-  if (!dialog.open) dialog.showModal();
+  popup.open(close);
 }
 function confirmModal(title, description, label, work, extra) {
-  const cancel = action('取消'); cancel.onclick = () => dialog.close();
+  const cancel = action('取消'); cancel.onclick = () => popup.close();
   const confirm = action(label, 'check', { class: 'button button-primary' });
   const status = el('p', { class: 'inline-status', role: 'status' });
   confirm.onclick = async () => { confirm.disabled = true; try { await work(); dialog.close(); } catch (error) { showStatus(status, error.message, 'error'); } finally { confirm.disabled = false; } };
@@ -97,7 +105,8 @@ function showLogin() {
   source?.close(); updates?.close(); source = updates = null;
   connectionState = 'connecting'; reconnectDelay = 1000;
   session = null; activeThread = null; threads = []; threadLimit = 50; threadPage = null; threadQuery = '';
-  resetTimeline(); pendingMessages.clear(); scrollPositions.clear(); threadRows.clear();
+  threadsLoaded = threadListError = false;
+  resetTimeline(); pendingMessages.clear(); scrollPositions.clear(); threadRows.clear(); filterScroll.clear();
   for (const draft of inputDrafts.values()) discardPreviews(draft.files);
   inputDrafts.clear(); composerDraft = null;
   pendingThreadId = null; activeSendTicket = null;
@@ -162,34 +171,80 @@ function drawRail(){
 function newConversation(){const choices=el('div',{class:'new-conversation-choices'});for(const[k,title,note,glyph]of[['ai','AI 对话','选择服务器上的人格，开始一段独立对话。','sparkle'],['direct','好友私聊','与已添加的好友说说近况。','mail'],['group','创建群聊','邀请同行的人，也可以邀请 AI。','heart']]){const b=action('',glyph,{'aria-label':title});b.append(el('span',{},title,el('small',{},note)));b.onclick=()=>{dialog.close();if(k==='ai'){if(session.astrbotConfigured)socialUI.aiHub();else newAiThread();}else contactDialog(k);};choices.append(b);}openModal('新建会话',choices);}
 function drawSidebar(){
  if(!session)return;drawRail();
- if(sidebarAccount!==session.key){sidebarAccount=session.key;try{threadKind=localStorage.getItem('tsukiakari-thread-kind:'+session.key)||'all';}catch{}const add=iconButton('plus','新建会话');add.onclick=newConversation;const search=el('input',{class:'thread-search','aria-label':'筛选会话',placeholder:'搜索会话…',value:threadQuery});search.oninput=()=>{threadQuery=search.value;drawThreadList();};
- const filters=el('div',{class:'conversation-filters','aria-label':'会话类型'});for(const[key,title]of[['all','全部'],['ai','AI'],['direct','好友'],['group','群聊']]){const button=action(title,undefined,{'aria-pressed':String(threadKind===key)});button.dataset.kind=key;button.onclick=()=>{threadKind=key;try{localStorage.setItem('tsukiakari-thread-kind:'+session.key,key);}catch{}drawThreadList();};filters.append(button);}
- const people=action('通讯录','heart');people.onclick=()=>socialUI.friends();const invites=action('申请与邀请','mail');invites.onclick=()=>socialUI.friends('invitations');
- const list = el('div', { class: 'thread-list', 'aria-label': '会话列表' });
+ if(sidebarAccount!==session.key){
+ let saved;
+ try { saved = localStorage.getItem('tsukiakari-thread-kind:' + session.key); } catch {}
+ sidebarAccount=session.key;
+ threadKind = filterOrder.some(([key]) => key === saved) ? saved : 'all';
+ const add=iconButton('plus','新建会话');add.onclick=newConversation;
+ const search=el('input',{class:'thread-search','aria-label':'筛选会话',placeholder:'搜索会话…',value:threadQuery});
+ search.oninput=()=>{threadQuery=search.value;applyThreadFilter();};
+ const filters=el('div',{class:'conversation-filters',role:'group','aria-label':'会话类型'});
+ for(const [key,title] of filterOrder){
+   const button=action(title,undefined,{'data-kind':key});
+   button.onclick=()=>chooseThreadKind(key);
+   filters.append(button);
+ }
+ filters.onkeydown = event => {
+   const index = filterOrder.findIndex(([key]) => key === threadKind);
+   const desired = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: filterOrder.length - 1 };
+   if (!Object.hasOwn(desired, event.key)) return;
+   event.preventDefault();
+   const next = (desired[event.key] + filterOrder.length) % filterOrder.length;
+   chooseThreadKind(filterOrder[next][0]);
+   filters.children[next].focus({ preventScroll: true });
+ };
+ const people=action('通讯录','heart',{'aria-haspopup':'dialog','aria-controls':'contacts-dialog'});
+ people.onclick=()=>socialUI.contacts.open();
+ const retry = action('重试读取', null, { class: 'button thread-retry', hidden: true });
+ retry.onclick = () => loadThreads().catch(error => toast(error.message, 'error'));
+ const list = el('div', { class: 'thread-list', 'aria-label': '会话列表' },
+   el('div', { class: 'thread-track' }), el('p', { class: 'sidebar-empty', hidden: true }), retry);
  const more = action('载入更多会话', null, { class: 'button more-threads', hidden: true });
  more.onclick = () => loadThreads(true).catch(error => toast(error.message, 'error'));
- sidebar.replaceChildren(el('div',{class:'conversation-heading'},el('strong',{},'月明かり'),add),search,filters,list,more,el('footer',{class:'sidebar-footer'},people,invites));}
+ sidebar.replaceChildren(el('div',{class:'conversation-heading'},el('strong',{},'月明かり'),add),search,filters,list,more,el('footer',{class:'sidebar-footer'},people));}
  drawThreadList();
 }
-function drawThreadList() {
-  const container = sidebar.querySelector('.thread-list');
-  if (!container) return;
-  sidebar.querySelectorAll('[data-kind]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.kind === threadKind)));
+function chooseThreadKind(kind) {
+  if (kind === threadKind) return;
+  const list = sidebar.querySelector('.thread-list');
+  filterScroll.set(threadKind, list.scrollTop);
+  const direction = filterOrder.findIndex(([key]) => key === kind) - filterOrder.findIndex(([key]) => key === threadKind);
+  threadKind = kind;
+  try { localStorage.setItem('tsukiakari-thread-kind:' + session.key, kind); } catch {}
+  applyThreadFilter();
+  list.scrollTop = filterScroll.get(kind) || 0;
+  TsukiakariDialogs.slide(list.querySelector('.thread-track'), direction);
+}
+function applyThreadFilter() {
+  const filters = sidebar.querySelector('.conversation-filters');
+  filters.style.setProperty('--selected-filter', filterOrder.findIndex(([key]) => key === threadKind));
+  for (const button of filters.children) button.setAttribute('aria-pressed', String(button.dataset.kind === threadKind));
   const query = threadQuery.trim().toLowerCase();
-  const visible = threads.filter(t => (threadKind === 'all' || t.kind === threadKind) && t.title.toLowerCase().includes(query));
-  const ids = new Set(visible.map(t => t.id));
+  let matches = 0;
+  for (const entry of threadRows.values()) {
+    const hidden = (threadKind !== 'all' && entry.kind !== threadKind) || !entry.search.includes(query);
+    if (entry.row.hidden !== hidden) entry.row.hidden = hidden;
+    if (!hidden) matches++;
+  }
+  const empty = sidebar.querySelector('.sidebar-empty');
+  empty.hidden = matches > 0;
+  if (!matches) {
+    const copy = threadListError && !threadsLoaded ? '暂时无法读取会话。'
+      : !threadsLoaded ? '正在读取会话…' : query ? '没有匹配的会话。' : '此分类还没有会话。';
+    if (empty.textContent !== copy) empty.textContent = copy;
+  }
+  sidebar.querySelector('.thread-retry').hidden = threadsLoaded || !threadListError;
+}
+function drawThreadList() {
+  const container = sidebar.querySelector('.thread-track');
+  if (!container) return;
+  const ids = new Set(threads.map(t => t.id));
   for (const [id, entry] of threadRows) {
     if (!ids.has(id)) { entry.row.remove(); threadRows.delete(id); }
   }
-  const empty = container.querySelector('.sidebar-empty');
-  if (visible.length) empty?.remove();
-  else {
-    const copy = query ? '没有匹配的会话。' : '这里还没有对话。点击 + 开始。';
-    if (!empty) container.append(el('p', { class: 'sidebar-empty' }, copy));
-    else if (empty.textContent !== copy) empty.textContent = copy;
-  }
   let next = container.firstElementChild;
-  for (const t of visible) {
+  for (const t of threads) {
     let entry = threadRows.get(t.id);
     if (!entry) {
       const label = { ai: 'AI 对话', direct: '好友', group: '群聊' }[t.kind] || '会话';
@@ -198,13 +253,14 @@ function drawThreadList() {
         el('span', { class: 'thread-kind-icon kind-' + t.kind }, icon(t.kind === 'ai' ? 'sparkle' : t.kind === 'group' ? 'heart' : 'mail', 16)),
         el('span', { class: 'thread-copy' }, title, el('small', {}, label)), unread);
       button.onclick = () => navigate('chat', { threadId: t.id });
-      entry = { row: el('div', { class: 'thread-row' }, button), button, title, unread };
+      entry = { row: el('div', { class: 'thread-row' }, button), button, title, unread, kind: t.kind, search: '' };
       threadRows.set(t.id, entry);
     }
     const { row, button, title, unread } = entry;
     if (title.textContent !== t.title) {
       title.textContent = button.title = t.title;
       button.setAttribute('aria-label', t.title);
+      entry.search = t.title.toLowerCase();
     }
     const count = t.unread > 99 ? '99+' : String(t.unread || '');
     if (unread.textContent !== count) unread.textContent = count;
@@ -219,6 +275,7 @@ function drawThreadList() {
   const more = sidebar.querySelector('.more-threads');
   more.hidden = threadPage === null;
   more.disabled = !!threadListRequest;
+  applyThreadFilter();
 }
 function drawHeader(){if(!session)return;
  const menu=iconButton('plus','展开导航',{class:'icon-button mobile-menu','aria-expanded':String(document.body.classList.contains('sidebar-open'))});menu.onclick=()=>{const open=document.body.classList.toggle('sidebar-open');sidebar.inert=!open;document.querySelector('#sidebar-shade').hidden=!open;};
@@ -253,6 +310,8 @@ async function loadThreads(more = false) {
       unread = result.totalUnread;
     }
     threads = [...merged.values()];
+    threadsLoaded = true;
+    threadListError = false;
     threadLimit = limit;
     threadPage = next;
     if (!windowHidden()) drawSidebar();
@@ -262,6 +321,10 @@ async function loadThreads(more = false) {
   const moreButton = sidebar.querySelector('.more-threads');
   if (moreButton) moreButton.disabled = true;
   try { await job; }
+  catch (error) {
+    if (version === accountVersion) { threadListError = true; if (!windowHidden()) drawSidebar(); }
+    throw error;
+  }
   finally {
     if (threadListRequest === job) {
       threadListRequest = null;
@@ -542,7 +605,7 @@ function removeThread() {
 }
 
 function fitInput() {
-  if (!textarea || view !== 'chat') return;
+  if (!textarea || view !== 'chat' || nativeTextareaSizing) return;
   textarea.style.height = 'auto';
   textarea.style.height = Math.min(160, textarea.scrollHeight) + 'px';
 }
@@ -847,6 +910,7 @@ async function navigate(next, options = {}) {
   pendingThreadId = null;
   clearTimeout(readTimer);
   if (dialog.open) dialog.close();
+  void socialUI.contacts.close({ immediate: true });
   view = next;
   document.body.classList.toggle('wide-page', view !== 'chat');
   sidebar.hidden = view !== 'chat';
@@ -952,10 +1016,11 @@ function openChatEvents() {
   });
   for (const topic of ['social', 'profiles', 'agents']) {
     stream.addEventListener(topic, event => {
-      if (topic === 'profiles' && JSON.parse(event.data).key === session?.key) void checkSession();
+      const value = JSON.parse(event.data);
+      if (topic === 'profiles' && value.key === session?.key) void checkSession();
       scheduleThreads();
       scheduleActiveRefresh();
-      socialUI.reloadSurface();
+      socialUI.reloadSurface(topic, value);
     });
   }
   stream.addEventListener('read', scheduleThreads);

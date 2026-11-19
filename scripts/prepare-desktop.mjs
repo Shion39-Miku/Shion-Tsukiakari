@@ -10,6 +10,12 @@ import { root, readConfig, sha256 } from '../server/core.mjs';
 export async function prepareDesktop() {
   const config = readConfig(), desktop = join(root, 'desktop'), output = join(desktop, '.generated');
   const backend = join(output, 'backend'); await mkdir(backend, {recursive:true});
+  const [dialog, dialogCss, preload] = await Promise.all([
+    readFile(join(root, 'public/ui-dialog.js'), 'utf8'),
+    readFile(join(root, 'public/ui-dialog.css'), 'utf8'),
+    readFile(join(desktop, 'preload.cjs'), 'utf8'),
+  ]);
+  await writeFile(join(output, 'window-preload.cjs'), "'use strict';\n" + dialog + '\nconst nativePromptStyles = ' + JSON.stringify(dialogCss) + ';\n' + preload);
   for (const name of ['server','public','migrations','content','site.json']) await cp(join(root,name),join(backend,name),{recursive:true});
   await mkdir(join(backend,'runtime'),{recursive:true});await copyFile(process.execPath,join(backend,'runtime','node.exe'));
   const bundledLicense = join(desktop, 'licenses', 'node-' + process.version + '.txt');

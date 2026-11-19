@@ -1,4 +1,5 @@
 import { action,el,icon,iconButton,image,showStatus,toast,motionChoice } from './ui.js';
+import { createContacts } from './chat-contacts.js';
 const statuses={online:'在线',away:'离开',busy:'忙碌',invisible:'隐身',offline:'离线'};
 const field=(label,input)=>el('label',{class:'field'},el('span',{},label),input);
 const text=(label,value='',max=200)=>el('input',{'aria-label':label,value, maxlength:max});
@@ -8,48 +9,17 @@ function personRow(person,...actions){return el('article',{class:'person-row'},p
 async function perform(button,status,work){if(button.disabled)return;button.disabled=true;try{await work();}catch(error){showStatus(status,error.message,'error');}finally{button.disabled=false;}}
 
 export function createSocialUI({request,account,openModal,openPage,openDetails,hasOpenSurface,dialog,refresh,onProfile,openThread,currentThread,uploadAvatar,routeStamp}){
+ const contacts = createContacts({ request, account, personRow, openThread, refresh });
  let redraw,heartbeat,surfaceTimer,preferences={sound:true,taskbar:true,desktop:true},noticeReady=false,lastBadge;
  const key=()=>account()?.key;
  async function loadPrefs(){const value=await request('/api/chat/preferences');preferences=value.item;if(lastBadge)updateBadge([],lastBadge.count);return preferences;}
- function reloadSurface(){
+ function reloadSurface(topic, value){
+  contacts.update(topic, value);
   if(surfaceTimer || !redraw || (!dialog.open && !hasOpenSurface?.())) return;
   surfaceTimer=setTimeout(()=>{
    surfaceTimer=null;
    if((dialog.open||hasOpenSurface?.())&&redraw)void redraw().catch(()=>{});
   },180);
- }
- function rowChat(person){const start=action('私聊','mail');start.onclick=()=>perform(start,el('span'),async()=>{const value=await request('/api/chat/threads',{method:'POST',json:{kind:'direct',members:[person.key]},key:crypto.randomUUID()});dialog.close();await openThread(value.item.id);});return start;}
- async function friends(tab='friends'){
-  const content=el('div',{class:'social-dynamic-list'}),status=el('p',{class:'inline-status',role:'status'}),tabs=el('div',{class:'social-tabs'});
-  const labels={friends:'好友',requests:'好友申请',invitations:'群邀请',search:'搜索用户'};
-  for(const [value,label]of Object.entries(labels)){const b=action(label,undefined,{'aria-pressed':String(tab===value)});b.onclick=()=>friends(value);tabs.append(b);}
-  const query=text('用户ID、账号或名称','',80),search=action('搜索','sparkle',{type:'submit'}),form=el('form',{class:'user-search'},field('用户ID、账号或名称',query),search);
-  let currentQuery='';
-  async function load(){
-   if(tab==='friends'){const data=await request('/api/chat/friends');content.replaceChildren(...data.items.map(p=>personRow(p,rowChat(p))));if(!data.items.length)content.append(el('p',{class:'quiet-empty'},'还没有同行的人。通过用户ID或账号发送好友申请吧。'));}
-   if(tab==='search'){
-    if(!currentQuery)return;const data=await request('/api/chat/users?q='+encodeURIComponent(currentQuery));content.replaceChildren(...data.items.map(p=>{
-     const label={self:'这是你',friends:'已添加',outgoing:'已申请',incoming:'处理申请',none:'添加好友'}[p.relationship];const add=action(label);add.disabled=['self','outgoing'].includes(p.relationship);
-     add.onclick=()=>p.relationship==='friends'?rowChat(p).click():p.relationship==='incoming'?friends('requests'):perform(add,status,async()=>{await request('/api/chat/friend-requests',{method:'POST',json:{target:p.key},key:crypto.randomUUID()});await load();});
-     return personRow(p,add);
-    }));if(!data.items.length)content.append(el('p',{class:'quiet-empty'},'没有找到这位旅人，请核对ID或账号。'));
-   }
-   if(tab==='requests'){
-    const data=await request('/api/chat/friend-requests');content.replaceChildren(...data.items.map(r=>{const incoming=r.to.key===key(),p=incoming?r.from:r.to,buttons=[];
-     if(r.state==='pending')for(const [verb,label]of incoming?[['accept','接受'],['reject','拒绝']]:[['cancel','撤销申请']]){const b=action(label);b.onclick=()=>perform(b,status,async()=>{await request('/api/chat/friend-requests/'+r.id+'/'+verb,{method:'POST'});await load();await refresh();});buttons.push(b);}
-     return el('div',{},el('small',{class:'relation-state'},({pending:incoming?'收到好友申请':'等待对方接受',accepted:'已添加为好友',rejected:'已拒绝',canceled:'已撤销'})[r.state]),personRow(p,buttons));
-    }));if(!data.items.length)content.append(el('p',{class:'quiet-empty'},'暂时没有新的好友申请。'));
-   }
-   if(tab==='invitations'){
-    const data=await request('/api/chat/invitations');content.replaceChildren(...data.items.map(r=>{const incoming=r.target.key===key(),buttons=[];
-     if(r.state==='pending')for(const [verb,label]of incoming?[['accept','接受邀请'],['reject','拒绝邀请']]:[['revoke','撤销邀请']]){const b=action(label);b.onclick=()=>perform(b,status,async()=>{await request('/api/chat/invitations/'+r.id+'/'+verb,{method:'POST'});await load();await refresh();});buttons.push(b);}
-     if(r.state==='accepted'&&incoming){const b=action('打开群聊');b.onclick=async()=>{dialog.close();await openThread(r.threadId);};buttons.push(b);}
-     return el('article',{class:'invite-card'},el('h3',{},r.title),el('p',{},(incoming?r.inviter.displayName+' 邀请你': '你邀请 '+r.target.displayName)+' · '+({pending:'待接受',accepted:'已加入',rejected:'已拒绝',revoked:'已撤销',expired:'已过期'})[r.state]),el('small',{},'有效期至 '+new Date(r.expiresAt).toLocaleString()),el('div',{class:'person-actions'},buttons));
-    }));if(!data.items.length)content.append(el('p',{class:'quiet-empty'},'没有待处理的群邀请。'));
-   }
-  }
-  form.onsubmit=e=>{e.preventDefault();currentQuery=query.value.trim();if(currentQuery.length<2){showStatus(status,'请至少输入两个字符。','error');return;}perform(search,status,load);};
-  openModal('星光之间 · 好友',tabs,tab==='search'&&form,status,content);redraw=load;await load().catch(e=>showStatus(status,e.message,'error'));
  }
  async function profile(present){
   const p=(await request('/api/chat/profile')).item;let version=p.version,avatarId=p.avatarId,selected,preview,keyForUpload=crypto.randomUUID();
@@ -226,7 +196,13 @@ export function createSocialUI({request,account,openModal,openPage,openDetails,h
   const density=el('select',{'aria-label':'界面密度'},el('option',{value:'comfortable'},'舒适'),el('option',{value:'compact'},'紧凑'));density.value=localStorage.getItem('tsukiakari-density')||'comfortable';
   const status=el('p',{class:'inline-status',role:'status'}),save=action('保存修改','check',{class:'button button-primary'});save.onclick=()=>perform(save,status,async()=>{if(section==='notifications'){const desired=Object.fromEntries(Object.entries(items).map(([k,v])=>[k,v.checked]));preferences=(await request('/api/chat/preferences',{method:'PATCH',json:desired})).item;updateBadge([],lastBadge?.count||0);}if(section==='close'&&native)await window.hoshifuruDesktop.setPreferences({closeAction:close.value});if(section==='appearance'){localStorage.setItem('tsukiakari-density',density.value);document.documentElement.dataset.density=density.value;}showStatus(status,'偏好已保存。','success');});
   const content=section==='appearance'?[motionChoice(),field('界面密度',density),el('p',{class:'hint'},'动效遵循系统减少动态效果选项。正文保持易读字号。')]:section==='close'?[native?field('关闭窗口时',close):el('p',{},'此项在桌面软件中可设置。'),el('p',{class:'hint'},'后台运行保留消息连接和托盘。可从托盘重新打开窗口或明确退出。')]:[...Object.entries(items).map(([k,v])=>el('label',{class:'contact-choice'},v,({sound:'消息提示音',taskbar:'任务栏未读提醒',desktop:'系统消息通知'})[k])),el('p',{class:'hint'},'默认提醒非当前前台会话的新消息，并遵循系统通知权限与勿扰状态。歌曲和消息音频由你主动播放。')];
-  present(({appearance:'外观',close:'关闭窗口',notifications:'消息通知'})[section],...content,status,save);
+  const reset = section === 'close' && native && action('恢复每次询问');
+  if (reset) reset.onclick = () => perform(reset, status, async () => {
+    await window.hoshifuruDesktop.setPreferences({ closeAction: 'ask' });
+    close.value = 'ask';
+    showStatus(status, '已恢复为每次询问。', 'success');
+  });
+  present(({appearance:'外观',close:'关闭窗口',notifications:'消息通知'})[section],...content,status,el('div',{class:'form-actions'},save,reset));
  }
  async function notifyMessage(value){if(!noticeReady||!account()||value.item.status!=='complete'||value.item.senderKey===key())return;
   const foreground=document.hasFocus()&&!document.documentElement.classList.contains('page-hidden')&&currentThread()?.id===value.threadId&&document.querySelector('#chat-view')?.hidden===false;if(foreground)return;
@@ -242,7 +218,7 @@ export function createSocialUI({request,account,openModal,openPage,openDetails,h
   window.hoshifuruDesktop?.setUnread?.(next);
  }
  function start(){clearInterval(heartbeat);noticeReady=false;void loadPrefs().catch(()=>{});heartbeat=setInterval(()=>{if(account())void request('/api/chat/presence/heartbeat',{method:'POST'}).catch(()=>{});},20000);}
- function stop(){clearInterval(heartbeat);clearTimeout(surfaceTimer);surfaceTimer=null;redraw=null;noticeReady=false;lastBadge=null;window.hoshifuruDesktop?.setUnread?.({count:0});}
+ function stop(){clearInterval(heartbeat);clearTimeout(surfaceTimer);surfaceTimer=null;redraw=null;contacts.reset();noticeReady=false;lastBadge=null;window.hoshifuruDesktop?.setUnread?.({count:0});}
   function connected(value=true){noticeReady=value;}
- return{friends,profile,groupMembers,aiHub,personaList,memories,settings,reloadSurface,start,stop,connected,notifyMessage,updateBadge};
+ return{contacts,profile,groupMembers,aiHub,personaList,memories,settings,reloadSurface,start,stop,connected,notifyMessage,updateBadge};
 }
