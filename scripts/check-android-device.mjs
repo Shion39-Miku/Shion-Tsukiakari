@@ -4,7 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { chromium } from 'playwright';
+import { _android as android } from 'playwright';
 import { androidFixture } from './android-fixture.mjs';
 
 const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
@@ -57,26 +57,6 @@ async function fillOrigin(address) {
   await tapNode('继续登录');
 }
 
-async function webview() {
-  return until(async () => {
-    const pid = (await shell('pidof', qa)).trim().split(/\s+/)[0];
-    if (!/^\d+$/.test(pid)) return;
-    const port = (await adb(['forward', 'tcp:0', 'localabstract:webview_devtools_remote_' + pid])).trim();
-    if (!/^\d+$/.test(port)) return;
-    const server = 'http://127.0.0.1:' + port;
-    try {
-      const pages = await (await fetch(server + '/json/list', { signal: AbortSignal.timeout(1000) })).json();
-      if (pages.some(item => item.url.endsWith('/chat'))) {
-        const browser = await chromium.connectOverCDP(server, { timeout: 5500 });
-        const page = browser.contexts()[0]?.pages().find(item => item.url().endsWith('/chat'));
-        if (page) return { browser, page, port };
-        await browser.close();
-      }
-    } catch { /* No WebView target yet. */ }
-    await adb(['forward', '--remove', 'tcp:' + port]);
-  }, 'No Android WebView debug target', 35000);
-}
-
 async function frameSample(page) {
   return page.evaluate(() => new Promise(resolve => {
     const list = document.querySelector('.thread-list'), times = [];
@@ -100,11 +80,18 @@ async function frameSample(page) {
 await mkdir(screens, { recursive: true });
 const fixture = await androidFixture(folder);
 const port = new URL(fixture.origin).port;
-let handle;
+let device;
+async function webview() {
+  device = (await android.devices()).find(candidate => candidate.serial() === serial);
+  assert.ok(device, 'Playwright cannot see the emulator via ADB.');
+  const view = await device.webView({ pkg: qa }, { timeout: 32000 });
+  return view.page();
+}
+
 let stage = 'emulator and installation';
 try {
   report.api = (await shell('getprop', 'ro.build.version.sdk')).trim();
-  report.webView = (await shell('dumpsys', 'webviewupdate')).match(/Current WebView package \(([^)]+)\)/)?.[1];
+  report.webView = (await shell('dumpsys', 'webviewupdate')).match(/Current WebView package[^\r\n]*:\s*\(([^)]+)\)/)?.[1];
   assert.ok(Number(report.api) >= 33);
   await shell('wm', 'size', '900x1810');
   await shell('wm', 'density', '365');
@@ -126,8 +113,7 @@ try {
   const launched = await start();
   report.firstLaunchMs = Number(launched.match(/TotalTime: (\d+)/)?.[1] || 0);
   await fillOrigin(fixture.origin);
-  handle = await webview();
-  let { page } = handle;
+  let page = await webview();
   page.setDefaultTimeout(18000);
   await page.getByRole('textbox', { name: '账号', exact: true }).fill(fixture.member.username);
   await page.getByLabel('密码', { exact: true }).fill(fixture.member.password);
@@ -166,12 +152,12 @@ try {
   stage = 'process re-creation and tablet resize';
   await listing('晚灯 · 演示').click();
   await composer().waitFor();
-  await handle.browser.close();
-  await adb(['forward', '--remove', 'tcp:' + handle.port]);
+  await device.close();
+  device = null;
   await shell('am', 'force-stop', qa);
   await start();
-  handle = await webview();
-  page = handle.page; page.setDefaultTimeout(18000);
+  page = await webview(); page.setDefaultTimeout(18000);
+  await page.locator('#app-boot').waitFor({ state: 'hidden' });
   await composer().waitFor();
   assert.equal(await composer().inputValue(), '系统重开后仍在的演示草稿。');
   await shell('wm', 'size', '1540x1040');
@@ -240,13 +226,16 @@ try {
   report.totalPssKb = Number(memory.match(/TOTAL PSS:\s+(\d+)/)?.[1] || 0);
 } catch (error) {
   report.failedStage = stage;
+  const visible = (await nodes().catch(() => [])).map(node => node[0]);
+  const known = ['继续登录', '填写 HTTPS 服务根地址', '正在检查聊天服务', '此地址没有月明かり聊天接口', '暂时连不上聊天服务', '登录月明かり'];
+  report.nativeSurface = known.filter(label => visible.some(node => node.includes(label)));
+  const log = await shell('logcat', '-d', '-s', 'AndroidRuntime').catch(() => '');
+  report.runtimeErrors = [...new Set([...log.matchAll(/(?:java|android)\.[a-z.]+\.([A-Za-z]+(?:Exception|Error)):/g)].map(match => match[1]))];
+  console.error(JSON.stringify({ nativeSurface: report.nativeSurface, runtimeErrors: report.runtimeErrors }));
   console.error('Android verification failed at ' + stage);
-  throw error;
+  throw Error(String(error.message).replaceAll(fixture.member.password, '[demo secret]').replaceAll(fixture.origin, '[demo service]'));
 } finally {
-  if (handle) {
-    await handle.browser.close().catch(() => {});
-    await adb(['forward','--remove','tcp:' + handle.port]).catch(() => {});
-  }
+  await device?.close().catch(() => {});
   await fixture.close();
   for (const args of [['wm','size','reset'], ['wm','density','reset']]) await shell(...args).catch(() => {});
   await adb(['reverse','--remove','tcp:' + port]).catch(() => {});
