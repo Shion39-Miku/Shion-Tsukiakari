@@ -57,15 +57,15 @@ async function fillOrigin(address) {
   await tapNode('继续登录');
 }
 
-async function frameSample(page) {
-  return page.evaluate(() => new Promise(resolve => {
+async function frameSample(page, scroll) {
+  return page.evaluate(scroll => new Promise(resolve => {
     const list = document.querySelector('.thread-list'), times = [];
     const from = list.scrollTop;
     let last;
     const tick = now => {
       if (last !== undefined) times.push(now - last);
       last = now;
-      list.scrollTop = from + times.length * 4;
+      if (scroll) list.scrollTop = from + times.length * 4;
       if (times.length < 48) requestAnimationFrame(tick);
       else {
         list.scrollTop = from;
@@ -74,13 +74,14 @@ async function frameSample(page) {
       }
     };
     requestAnimationFrame(tick);
-  }));
+  }), scroll);
 }
 
 await mkdir(screens, { recursive: true });
 const fixture = await androidFixture(folder);
 const port = new URL(fixture.origin).port;
 let device;
+let page;
 async function webview() {
   device = (await android.devices()).find(candidate => candidate.serial() === serial);
   assert.ok(device, 'Playwright cannot see the emulator via ADB.');
@@ -113,7 +114,7 @@ try {
   const launched = await start();
   report.firstLaunchMs = Number(launched.match(/TotalTime: (\d+)/)?.[1] || 0);
   await fillOrigin(fixture.origin);
-  let page = await webview();
+  page = await webview();
   page.setDefaultTimeout(18000);
   await page.getByRole('textbox', { name: '账号', exact: true }).fill(fixture.member.username);
   await page.getByLabel('密码', { exact: true }).fill(fixture.member.password);
@@ -127,7 +128,8 @@ try {
   await listing('晚灯 · 演示').waitFor();
   assert.equal(await list().locator('.thread-row').count(), 50);
   assert.ok(await page.evaluate(() => innerWidth < 550));
-  report.scroll = await Promise.race([frameSample(page), wait(6000).then(() => null)]);
+  report.idleFrames = await Promise.race([frameSample(page, false), wait(7000).then(() => null)]);
+  report.scroll = await Promise.race([frameSample(page, true), wait(7000).then(() => null)]);
   await snap('android-phone');
   for (const type of ['AI','群聊','全部','好友']) await filter(type).click();
   await listing('晚灯 · 演示').click();
@@ -149,17 +151,9 @@ try {
   assert.equal(await filter('好友').getAttribute('aria-pressed'), 'true');
   pass('手机列表、聊天键盘、返回键、筛选与通讯录');
 
-  stage = 'process re-creation and tablet resize';
+  stage = 'tablet resize and streaming reply';
   await listing('晚灯 · 演示').click();
   await composer().waitFor();
-  await device.close();
-  device = null;
-  await shell('am', 'force-stop', qa);
-  await start();
-  page = await webview(); page.setDefaultTimeout(18000);
-  await page.locator('#app-boot').waitFor({ state: 'hidden' });
-  await composer().waitFor();
-  assert.equal(await composer().inputValue(), '系统重开后仍在的演示草稿。');
   await shell('wm', 'size', '1540x1040');
   await shell('wm', 'density', '190');
   await page.waitForFunction(() => innerWidth >= 740);
@@ -179,7 +173,7 @@ try {
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
   await page.getByText(/演示回复/).last().waitFor();
   assert.deepEqual(fixture.calls, [fixture.assistant]);
-  pass('系统重建保存会话和草稿，真实大屏双栏及模拟 AstrBot 流式回复');
+  pass('大屏双栏及成员面板、缩放保留草稿、模拟 AstrBot 流式回复');
 
   stage = 'notification permission and background delivery';
   await my().click();
@@ -222,6 +216,30 @@ try {
   await press(4);
   await page.getByRole('heading', { name: '先别道晚安…', exact: true }).waitFor();
   pass('桌面快捷入口已注册，真实深链接与插画加载，取消系统卸载后可返回应用');
+
+  stage = 'process re-creation';
+  await page.getByRole('button', { name: '返回应用', exact: true }).click();
+  await filter('好友').click();
+  await listing('晚灯 · 演示').click();
+  await composer().waitFor();
+  assert.equal(await composer().inputValue(), '系统重开后仍在的演示草稿。');
+  const stored = await page.evaluate(({ owner, id }) => ({
+    route: JSON.parse(localStorage.getItem('android-route:' + owner))?.thread === id,
+    list: JSON.parse(localStorage.getItem('android-route:' + owner))?.list,
+    draft: Boolean(localStorage.getItem('chat-input:' + owner + ':' + id)),
+  }), { owner: fixture.me, id: fixture.direct });
+  assert.deepEqual(stored, { route: true, list: false, draft: true });
+  await press(3);
+  await wait(5500);
+  await device.close();
+  device = null;
+  await shell('am', 'force-stop', qa);
+  await start();
+  page = await webview(); page.setDefaultTimeout(18000);
+  await page.locator('#app-boot').waitFor({ state: 'hidden' });
+  await composer().waitFor();
+  assert.equal(await composer().inputValue(), '系统重开后仍在的演示草稿。');
+  pass('系统回收后保留登录、上次会话与草稿');
   const memory = await shell('dumpsys', 'meminfo', qa);
   report.totalPssKb = Number(memory.match(/TOTAL PSS:\s+(\d+)/)?.[1] || 0);
 } catch (error) {
@@ -229,9 +247,16 @@ try {
   const visible = (await nodes().catch(() => [])).map(node => node[0]);
   const known = ['继续登录', '填写 HTTPS 服务根地址', '正在检查聊天服务', '此地址没有月明かり聊天接口', '暂时连不上聊天服务', '登录月明かり'];
   report.nativeSurface = known.filter(label => visible.some(node => node.includes(label)));
+  report.pageSurface = await page?.evaluate(({ owner, id }) => ({
+    loggedIn: document.querySelector('#app-shell')?.hidden === false,
+    signIn: document.querySelector('#app-login')?.hidden === false,
+    pane: document.body.dataset.androidPane || null,
+    routeSaved: JSON.parse(localStorage.getItem('android-route:' + owner))?.thread === id,
+    draftSaved: Boolean(localStorage.getItem('chat-input:' + owner + ':' + id)),
+  }), { owner: fixture.me, id: fixture.direct }).catch(() => null);
   const log = await shell('logcat', '-d', '-s', 'AndroidRuntime').catch(() => '');
   report.runtimeErrors = [...new Set([...log.matchAll(/(?:java|android)\.[a-z.]+\.([A-Za-z]+(?:Exception|Error)):/g)].map(match => match[1]))];
-  console.error(JSON.stringify({ nativeSurface: report.nativeSurface, runtimeErrors: report.runtimeErrors }));
+  console.error(JSON.stringify({ nativeSurface: report.nativeSurface, pageSurface: report.pageSurface, runtimeErrors: report.runtimeErrors }));
   console.error('Android verification failed at ' + stage);
   throw Error(String(error.message).replaceAll(fixture.member.password, '[demo secret]').replaceAll(fixture.origin, '[demo service]'));
 } finally {

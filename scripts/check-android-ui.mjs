@@ -5,13 +5,25 @@ import { chromium } from 'playwright';
 import { androidFixture } from './android-fixture.mjs';
 
 const output = resolve(process.env.TSUKIAKARI_ANDROID_QA || 'artifacts/android/ui-check');
+const bundledWeb = process.env.TSUKIAKARI_ANDROID_WEB_ASSETS;
 await mkdir(output, { recursive: true });
-const report = { checks: [], runtime: 'Playwright Android viewport with local native bridge simulator' };
+const report = { checks: [], runtime: 'Playwright Android viewport with local native bridge simulator', apkAssets: Boolean(bundledWeb) };
 const fixture = await androidFixture(output);
 let browser, page;
 const pass = text => { report.checks.push(text); console.log('通过 · ' + text); };
 
 async function account(context, credentials) {
+  if (bundledWeb) {
+    await context.route(fixture.origin + '/**', async route => {
+      const name = new URL(route.request().url()).pathname.replace(/^\/chat$/, '/chat.html');
+      if (!/^\/[a-z0-9./-]+$/i.test(name) || name.includes('..')) return route.continue();
+      const path = join(bundledWeb, name);
+      try { await readFile(path); } catch { return route.continue(); }
+      await route.fulfill({ path, headers: {
+        'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; worker-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
+      } });
+    });
+  }
   await context.addInitScript(() => {
     addEventListener('DOMContentLoaded', () => {
       const { port1, port2 } = new MessageChannel();

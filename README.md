@@ -54,6 +54,14 @@
 | --- | --- |
 | ![通讯录浮窗](docs/images/contacts-window.png) | ![关闭月明かり](docs/images/close-options.png) |
 
+### Android 0.1.0
+
+以下手机图来自 Android 15 模拟器，使用隔离的演示账号与消息。
+
+| 手机会话列表 | 手机聊天 |
+| --- | --- |
+| ![手机会话列表](docs/images/android-phone.png) | ![手机聊天](docs/images/android-phone-chat.png) |
+
 ## 使用与权限
 
 - 左侧功能栏进入聊天、月光庭院、个人设置；管理员另有「网站管理」「软件管理」。
