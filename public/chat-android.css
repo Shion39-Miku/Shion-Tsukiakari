@@ -38,7 +38,8 @@
 .android-app .thread-button { min-height: 66px; }
 .android-app .thread-copy strong { font-size: 16px; }
 .android-app .thread-copy small { font-size: 12px; }
-.android-app .thread-list { overflow-y: auto; scrollbar-gutter: auto; }
+.android-app .thread-list { overflow-y: auto; scrollbar-gutter: auto; contain: paint; overscroll-behavior-y: contain; }
+.android-app .thread-row { content-visibility: auto; contain-intrinsic-block-size: auto 66px; }
 .android-app .thread-track { touch-action: pan-y pinch-zoom; }
 .android-app .conversation { padding: 18px 16px 12px; scrollbar-gutter: auto; }
 .android-app .message-list { max-width: 740px; gap: 18px; }
@@ -119,6 +120,7 @@
   min-height: 48px; color: var(--android-ink); background: none; border: 0; font: inherit; text-align: start;
 }
 .android-notice-link svg { flex: none; color: var(--android-petal); }
+.android-notice-avatar { flex: none; width: 26px; height: 26px; border-radius: 8px; object-fit: cover; }
 .android-notice-link span { overflow: hidden; }
 .android-notice-link strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .android-notice-link small { color: #d6bfd8; }

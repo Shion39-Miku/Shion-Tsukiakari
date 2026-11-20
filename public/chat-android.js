@@ -125,8 +125,10 @@ export function androidClient({ account, request, navigate, contacts, modal, con
     if (!preferences.groups && (!kind || kind === 'group')) return;
     if (preferences.sound || preferences.vibrate) send('alert');
     if (!preferences.cards) return;
+    const portrait = message.senderAvatar?.thumbUrl || message.senderAvatar?.url;
+    const badge = portrait ? image(portrait, '', { width: 26, height: 26, class: 'android-notice-avatar' }) : icon('moon', 20);
     const open = el('button', { type: 'button', class: 'android-notice-link' },
-      icon('moon', 20), el('span', {}, el('strong', {}, summary?.title || message.senderName || '新消息'),
+      badge, el('span', {}, el('strong', {}, summary?.title || message.senderName || '新消息'),
         el('small', {}, (kinds[kind] || '来信') + ' · 点按查看')));
     open.onclick = () => { cards.replaceChildren(); void navigate('chat', { threadId: packet.threadId }); };
     const dismiss = action('关闭', undefined, { 'aria-label': '关闭消息提示' });
