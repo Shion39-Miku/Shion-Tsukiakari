@@ -42,7 +42,9 @@ pnpm security:check android
 
 APK 和 SHA-256 清单写到 `artifacts/android/0.1.0/` 与 `artifacts/android/0.1.0-qa/`。同一构建机复用测试签名。Windows 签名文件位于当前用户的本地应用数据，Linux 构建机使用忽略的构建目录。
 
-QA 版包名以 `.qa` 结尾，允许调试和仅用于 ADB 的回环 HTTP。接入本机时使用 `adb reverse tcp:端口 tcp:端口`，再填 `http://127.0.0.1:端口`。正式 HTTPS 测试包适合手动安装。未配置可信 HTTPS 的环境可运行隔离验收，包括两个演示账号、分开的聊天和网站数据库、模拟 AstrBot。
+QA 版包名以 `.qa` 结尾，允许调试和仅用于 ADB 的回环 HTTP。接入本机时使用 `adb reverse tcp:端口 tcp:端口`，再填 `http://127.0.0.1:端口`。标准 HTTPS 测试包适合手动安装。未配置可信 HTTPS 的环境可运行隔离验收，包括一位演示管理员、两位普通演示用户、分开的聊天和网站数据库，以及模拟 AstrBot。
+
+手动验收时，在电脑运行 `node --disable-warning=ExperimentalWarning scripts/android-fixture.mjs`。终端会显示实际端口，演示登录信息写入本机的 `artifacts/android/fixture/fixture.private.json`。保持终端运行，把 QA APK 安装到已授权 USB 调试的设备，用 ADB 转发该端口即可登录演示账号。
 
 ```sh
 pnpm exec playwright install chromium

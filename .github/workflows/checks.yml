@@ -54,6 +54,9 @@ jobs:
         run: |
           export JAVA_HOME="$JAVA_HOME_17_X64"
           export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+          export ANDROID_USER_HOME="$RUNNER_TEMP/tsukiakari-android"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
           sdkmanager="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)"
           test -x "$sdkmanager"
           image='system-images;android-35;default;x86_64'
@@ -63,7 +66,14 @@ jobs:
           test -c /dev/kvm
           sudo chown "$(id -u):$(id -g)" /dev/kvm
           "$ANDROID_HOME/emulator/emulator" -accel-check
-          echo no | "$(dirname "$sdkmanager")/avdmanager" create avd --force --name tsukiakari_ci --package "$image" --device pixel_2
+          avd="$ANDROID_AVD_HOME/tsukiakari_ci.avd"
+          echo no | "$(dirname "$sdkmanager")/avdmanager" create avd --force --name tsukiakari_ci --package "$image" \
+            --device pixel_2 --path "$avd"
+          test -f "$avd/config.ini"
+          if [ ! -f "$ANDROID_AVD_HOME/tsukiakari_ci.ini" ]; then
+            printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-35\n' "$avd" > "$ANDROID_AVD_HOME/tsukiakari_ci.ini"
+          fi
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fx tsukiakari_ci
           mkdir -p artifacts/android/device-check
           log=artifacts/android/device-check/emulator.log
           adb start-server
