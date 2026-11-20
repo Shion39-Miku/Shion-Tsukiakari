@@ -176,6 +176,10 @@ try {
   pass('大屏双栏及成员面板、缩放保留草稿、模拟 AstrBot 流式回复');
 
   stage = 'notification permission and background delivery';
+  // Privacy previews are identical across chats. Prepare a single unread sender for the system tap.
+  for (const id of [fixture.direct, fixture.group, fixture.assistant]) {
+    assert.equal((await fixture.moon('/api/chat/threads/' + id + '/read', 'POST')).status, 200);
+  }
   await my().click();
   await page.locator('.page-nav').getByRole('button', { name: '设备通知', exact: true }).click();
   await page.getByRole('button', { name: '通知权限说明' }).click();
@@ -193,8 +197,12 @@ try {
   const notices = await shell('dumpsys', 'notification', '--noredact');
   assert.ok(notices.includes('月明かり收到一条新消息'));
   assert.ok(!notices.includes('仅供验收的通知正文'));
+  pass('系统权限与后台消息到达有效，默认通知隐藏正文');
+  stage = 'notification deep link and synced read';
   await shell('cmd', 'statusbar', 'expand-notifications');
   await tapNode('月明かり收到一条新消息');
+  await until(async () => (await shell('dumpsys', 'activity', 'activities')).split(/\r?\n/).some(line => line.includes('topResumedActivity') && line.includes(qa)),
+    'The notification did not bring the app to the foreground');
   await page.getByText('仅供验收的通知正文', { exact: true }).waitFor();
   await until(async () => (await fixture.moon('/api/chat/threads/' + fixture.direct)).value.item.unread === 0, 'Unread not synchronized');
   await press(3);
@@ -202,7 +210,7 @@ try {
   await until(count, 'Second background message was not delivered', 35000);
   await fixture.moon('/api/chat/threads/' + fixture.direct + '/read', 'POST');
   await until(async () => !(await count()), 'Other device did not clear the notification');
-  pass('系统实际授权，后台通知默认隐藏正文，点按直达会话，并随另一客户端已读消失');
+  pass('系统通知点按直达会话，并随另一客户端已读消失');
 
   stage = 'launcher and native uninstall';
   assert.match(await shell('dumpsys', 'shortcut'), /id=farewell/);

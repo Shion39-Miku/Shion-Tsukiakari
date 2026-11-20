@@ -56,11 +56,15 @@
 
 ### Android 0.1.0
 
-以下手机图来自 Android 15 模拟器，使用隔离的演示账号与消息。
+以下手机与平板布局来自 Android 15 模拟器，使用隔离的演示账号与消息。
 
 | 手机会话列表 | 手机聊天 |
 | --- | --- |
 | ![手机会话列表](docs/images/android-phone.png) | ![手机聊天](docs/images/android-phone-chat.png) |
+
+![安卓平板双栏与群成员](docs/images/android-tablet.png)
+
+[手机通讯录浮层](docs/images/android-contacts.png)
 
 ## 使用与权限
 

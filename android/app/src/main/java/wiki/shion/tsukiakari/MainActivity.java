@@ -64,7 +64,7 @@ public final class MainActivity extends Activity {
     private ValueCallback<Uri[]> picker;
     private DocumentJob document;
     private String origin, account = "", nextThread, nextAccount;
-    private boolean foreground, bridgeReady, farewell;
+    private boolean foreground, resumed, bridgeReady, farewell;
     private android.media.SoundPool sound;
     private int chime;
 
@@ -128,7 +128,7 @@ public final class MainActivity extends Activity {
     }
 
     private void deliverEntry() {
-        if (!bridgeReady || account.isEmpty()) return;
+        if (!resumed || !hasWindowFocus() || !bridgeReady || account.isEmpty()) return;
         if (nextThread != null) {
             if (account.equals(nextAccount)) event("thread", nextThread);
             nextThread = nextAccount = null;
@@ -454,8 +454,20 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        resumed = true;
         try { sendPreferences(); } catch (Exception ignored) {}
         if (!account.isEmpty()) applyService();
+        deliverEntry();
+    }
+
+    @Override protected void onPause() {
+        resumed = false;
+        super.onPause();
+    }
+
+    @Override public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        if (focused) deliverEntry();
     }
 
     @Override public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
