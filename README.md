@@ -1,10 +1,12 @@
 # 月明かり · Tsukiakari
 
-月色里的桌面聊天应用：好友私聊、邀请制群聊、AstrBot AI 人格，以及独立的网站管理与软件管理。使用 Electron、Node.js 与 SQLite，可在 Windows 本地运行。
+月色里的聊天应用。支持 Windows 桌面、安卓手机和平板，提供好友私聊、邀请制群聊、AstrBot AI 人格和独立的两套管理界面。各客户端可连接同一套 Node.js 与 SQLite 聊天服务。
 
 ![AI 聊天](docs/images/ai-chat.png)
 
 **0.4.2** 放大聊天文字，修复会话分类与通讯录切换时的闪烁。通讯录和关闭提示使用应用内浮窗。见[版本说明](docs/maintenance-0.4.2.md)。
+
+**安卓 0.1.0** 提供适配触控的手机布局和平板双栏。安装、通知、长按图标彩蛋和本地验收见[安卓指南](docs/android.md)及[版本说明](docs/android-0.1.0.md)。
 
 ## 功能
 
@@ -27,6 +29,8 @@
 4. 普通账号登录后可使用聊天、个人设置及公开网站栏目；不能管理账号、网站或人格。
 
 旧版升级沿用原账号和完整数据目录。安装器保留升级标识；发现旧 `HoshifuruYoruNi` 或旧便携数据目录时直接复用，避免只迁移数据库而丢失登录态和缓存。详见[数据与升级](docs/architecture.md#数据与升级)。
+
+安卓需要 Android 9 或更新版本及可更新的 Android System WebView。首次启动填写已部署聊天服务的 HTTPS 根地址，再使用已有账号登录。软件内置的桌面本地服务可用于同机开发；手机验收说明见[安卓指南](docs/android.md#开发与测试)。
 
 ## 界面预览
 
@@ -87,10 +91,24 @@ pnpm check:desktop:portable   # 验证真实单文件启动器
 
 构建直接复制当前 Node 运行时及锁定的生产依赖，不依赖本机旧交付目录。公开包始终使用干净种子库，且不包含 `.env`、管理员、登录会话、聊天记录或服务令牌。未配置 AI 时聊天联系人、群聊、网站栏目和管理仍可使用。
 
+## 提交与发布前安全检查
+
+仓库规则见 [AGENTS.md](AGENTS.md)。每个 Windows x64 工作副本初始化一次，已有其他 Git 钩子时先合并。准备发布包时需要可用的 7-Zip 和已安装的桌面构建依赖。
+
+```powershell
+pnpm security:setup         # 以 SHA-256 校验并安装固定版本的 Gitleaks，启用本仓库钩子
+pnpm security:check staged  # 检查 Git 暂存内容和作者邮箱
+pnpm security:check history # 检查本地可访问引用的历史及 Git 元数据
+pnpm security:check release # 打包后检查安装包及免安装包的实际内容
+pnpm security:check android # 校验安卓测试包的签名、内容和连接安全策略
+```
+
+Git 会在提交及推送时再次检查。检查失败先处理问题再重试。扫描只输出位置和规则；真实 `.env`、数据、备份及日志保留在本机。截图、附件、文本中的个人信息和扫描器难以识别的凭证仍要人工核对。CI 在上传构建产物前检查完整历史和两个可执行包。
+
 ## 后端与 AstrBot
 
 ```text
-月明かり桌面客户端
+月明かり Windows / Android 客户端
   ├─ 软件后端 → chat.sqlite（用户、关系、群、消息、记忆）
   │    └─ 受限连接器 → AstrBot（权威人格、模型、独立 AI 会话）
   └─ 受控网站接口 → 网站后端 → website.sqlite（内容、媒体、草稿、发布批次）

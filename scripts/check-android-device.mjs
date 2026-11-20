@@ -1,0 +1,253 @@
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { setTimeout as wait } from 'node:timers/promises';
+import { promisify } from 'node:util';
+import { chromium } from 'playwright';
+import { androidFixture } from './android-fixture.mjs';
+
+const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+assert.ok(sdk, 'Set ANDROID_HOME before running the device check.');
+const binaries = process.argv.slice(2).map(path => resolve(path));
+assert.equal(binaries.length, 2, 'Pass the HTTPS APK and the QA APK in that order.');
+const adbPath = join(sdk, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb');
+const serial = process.env.ANDROID_SERIAL || 'emulator-5554';
+assert.match(serial, /^emulator-\d+$/, 'This script changes display settings on an isolated emulator.');
+const folder = resolve(process.env.TSUKIAKARI_ANDROID_QA || 'artifacts/android/device-check');
+const screens = join(folder, 'screens');
+const component = 'wiki.shion.tsukiakari.MainActivity';
+const secure = 'wiki.shion.tsukiakari', qa = secure + '.qa';
+const adb = async (args, { binary = false, timeout = 27000 } = {}) =>
+  (await promisify(execFile)(adbPath, ['-s', serial, ...args], { timeout, encoding: binary ? 'buffer' : 'utf8', maxBuffer: 18 * 1024 * 1024 })).stdout;
+const shell = (...args) => adb(['shell', ...args]);
+const press = key => shell('input', 'keyevent', String(key));
+const start = (app = qa) => shell('am', 'start', '-W', '-n', app + '/' + component);
+const snap = async key => writeFile(join(screens, key + '.png'), await adb(['exec-out', 'screencap', '-p'], { binary: true }));
+const report = { runtime: 'Android emulator using the bundled WebView', checks: [] };
+const pass = message => { report.checks.push(message); console.log('通过 · ' + message); };
+
+async function until(check, label, limit = 20000) {
+  const end = Date.now() + limit;
+  do {
+    let value;
+    try { value = await check(); } catch { /* The OS view or devtools can still be opening. */ }
+    if (value) return value;
+    await wait(350);
+  } while (Date.now() < end);
+  throw Error(label);
+}
+
+async function nodes() {
+  await shell('uiautomator', 'dump', '/sdcard/tsukiakari-ui.xml');
+  const xml = await adb(['exec-out', 'cat', '/sdcard/tsukiakari-ui.xml']);
+  return [...xml.matchAll(/<node\b[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*>/g)];
+}
+
+async function tapNode(label) {
+  const row = await until(async () => (await nodes()).find(node => ['text','content-desc','resource-id'].some(key => node[0].includes(key + '="' + label + '"'))),
+    'Android control unavailable: ' + label);
+  await shell('input', 'tap', String(Math.round((Number(row[1]) + Number(row[3])) / 2)), String(Math.round((Number(row[2]) + Number(row[4])) / 2)));
+}
+
+async function fillOrigin(address) {
+  await tapNode('聊天服务地址');
+  await shell('input', 'text', address);
+  await press(4);
+  await tapNode('继续登录');
+}
+
+async function webview() {
+  return until(async () => {
+    const pid = (await shell('pidof', qa)).trim().split(/\s+/)[0];
+    if (!/^\d+$/.test(pid)) return;
+    const port = (await adb(['forward', 'tcp:0', 'localabstract:webview_devtools_remote_' + pid])).trim();
+    if (!/^\d+$/.test(port)) return;
+    const server = 'http://127.0.0.1:' + port;
+    try {
+      const pages = await (await fetch(server + '/json/list', { signal: AbortSignal.timeout(1000) })).json();
+      if (pages.some(item => item.url.endsWith('/chat'))) {
+        const browser = await chromium.connectOverCDP(server, { timeout: 5500 });
+        const page = browser.contexts()[0]?.pages().find(item => item.url().endsWith('/chat'));
+        if (page) return { browser, page, port };
+        await browser.close();
+      }
+    } catch { /* No WebView target yet. */ }
+    await adb(['forward', '--remove', 'tcp:' + port]);
+  }, 'No Android WebView debug target', 35000);
+}
+
+async function frameSample(page) {
+  return page.evaluate(() => new Promise(resolve => {
+    const list = document.querySelector('.thread-list'), times = [];
+    const from = list.scrollTop;
+    let last;
+    const tick = now => {
+      if (last !== undefined) times.push(now - last);
+      last = now;
+      list.scrollTop = from + times.length * 4;
+      if (times.length < 48) requestAnimationFrame(tick);
+      else {
+        list.scrollTop = from;
+        times.sort((a, b) => a - b);
+        resolve({ samples: times.length, p50ms: times[23], p95ms: times[45] });
+      }
+    };
+    requestAnimationFrame(tick);
+  }));
+}
+
+await mkdir(screens, { recursive: true });
+const fixture = await androidFixture(folder);
+const port = new URL(fixture.origin).port;
+let handle;
+let stage = 'emulator and installation';
+try {
+  report.api = (await shell('getprop', 'ro.build.version.sdk')).trim();
+  report.webView = (await shell('dumpsys', 'webviewupdate')).match(/Current WebView package \(([^)]+)\)/)?.[1];
+  assert.ok(Number(report.api) >= 33);
+  await shell('wm', 'size', '900x1810');
+  await shell('wm', 'density', '365');
+  for (const scale of ['window_animation_scale','transition_animation_scale','animator_duration_scale']) {
+    await shell('settings', 'put', 'global', scale, '0');
+  }
+  await shell('settings', 'put', 'secure', 'show_ime_with_hard_keyboard', '1');
+  await shell('input', 'keyevent', '82');
+  await adb(['reverse', 'tcp:' + port, 'tcp:' + port]);
+  for (const apk of binaries) assert.match(await adb(['install', '-r', apk], { timeout: 70000 }), /Success/);
+  stage = 'HTTPS variant rejects HTTP';
+  await start(secure);
+  await fillOrigin(fixture.origin);
+  await until(async () => (await nodes()).some(node => node[0].includes('填写 HTTPS 服务根地址')), 'HTTPS policy did not reject HTTP.');
+  await shell('am', 'force-stop', secure);
+  pass('两个 APK 安装成功，HTTPS 版拒绝明文地址');
+
+  stage = 'phone and real Android bridge';
+  const launched = await start();
+  report.firstLaunchMs = Number(launched.match(/TotalTime: (\d+)/)?.[1] || 0);
+  await fillOrigin(fixture.origin);
+  handle = await webview();
+  let { page } = handle;
+  page.setDefaultTimeout(18000);
+  await page.getByRole('textbox', { name: '账号', exact: true }).fill(fixture.member.username);
+  await page.getByLabel('密码', { exact: true }).fill(fixture.member.password);
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await page.locator('#app-boot').waitFor({ state: 'hidden' });
+  const list = () => page.locator('.thread-list');
+  const listing = title => list().getByRole('button', { name: title, exact: true });
+  const filter = name => page.locator('.conversation-filters').getByRole('button', { name, exact: true });
+  const my = () => page.getByRole('navigation', { name: '应用功能' }).getByRole('button', { name: '我的', exact: true });
+  const composer = () => page.getByRole('textbox', { name: '聊天消息', exact: true });
+  await listing('晚灯 · 演示').waitFor();
+  assert.equal(await list().locator('.thread-row').count(), 50);
+  assert.ok(await page.evaluate(() => innerWidth < 550));
+  report.scroll = await Promise.race([frameSample(page), wait(6000).then(() => null)]);
+  await snap('android-phone');
+  for (const type of ['AI','群聊','全部','好友']) await filter(type).click();
+  await listing('晚灯 · 演示').click();
+  await page.getByText('我把新歌放进收藏了，有空一起听。', { exact: true }).waitFor();
+  await composer().click();
+  await composer().fill('系统重开后仍在的演示草稿。');
+  assert.equal(await page.getByRole('button', { name: '发送消息', exact: true }).isVisible(), true);
+  await press(4);
+  await composer().waitFor();
+  assert.equal(await composer().inputValue(), '系统重开后仍在的演示草稿。');
+  await press(4);
+  await listing('晚灯 · 演示').waitFor();
+  await page.getByRole('navigation', { name: '应用功能' }).getByRole('button', { name: '通讯录', exact: true }).click();
+  await page.getByRole('tab', { name: '群邀请' }).click();
+  await snap('android-contacts');
+  await press(4);
+  await page.locator('#contacts-dialog').waitFor({ state: 'hidden' });
+  assert.equal(await filter('好友').getAttribute('aria-pressed'), 'true');
+  pass('手机列表、聊天键盘、返回键、筛选与通讯录');
+
+  stage = 'process re-creation and tablet resize';
+  await listing('晚灯 · 演示').click();
+  await composer().waitFor();
+  await handle.browser.close();
+  await adb(['forward', '--remove', 'tcp:' + handle.port]);
+  await shell('am', 'force-stop', qa);
+  await start();
+  handle = await webview();
+  page = handle.page; page.setDefaultTimeout(18000);
+  await composer().waitFor();
+  assert.equal(await composer().inputValue(), '系统重开后仍在的演示草稿。');
+  await shell('wm', 'size', '1540x1040');
+  await shell('wm', 'density', '190');
+  await page.waitForFunction(() => innerWidth >= 740);
+  const sidebar = await page.locator('#app-sidebar').boundingBox();
+  const body = await page.locator('#conversation').boundingBox();
+  assert.ok(sidebar.width >= 240 && sidebar.x + sidebar.width <= body.x + 2);
+  assert.equal(await composer().inputValue(), '系统重开后仍在的演示草稿。');
+  await filter('群聊').click();
+  await listing('月下茶话').click();
+  await page.getByRole('button', { name: '查看群成员' }).click();
+  await page.locator('#conversation-details').getByText('知遥 · 演示人格', { exact: true }).waitFor();
+  await snap('android-tablet');
+  await page.getByRole('button', { name: '关闭会话详情' }).click();
+  await filter('AI').click();
+  await listing('知遥的夜话').click();
+  await composer().fill('这里是 Android 演示。');
+  await page.getByRole('button', { name: '发送消息', exact: true }).click();
+  await page.getByText(/演示回复/).last().waitFor();
+  assert.deepEqual(fixture.calls, [fixture.assistant]);
+  pass('系统重建保存会话和草稿，真实大屏双栏及模拟 AstrBot 流式回复');
+
+  stage = 'notification permission and background delivery';
+  await my().click();
+  await page.locator('.page-nav').getByRole('button', { name: '设备通知', exact: true }).click();
+  await page.getByRole('button', { name: '通知权限说明' }).click();
+  await page.getByRole('button', { name: '前往授权' }).click();
+  await tapNode('com.android.permissioncontroller:id/permission_allow_button');
+  await page.getByText('系统通知已授权。', { exact: true }).waitFor();
+  await page.getByLabel('后台消息连接', { exact: false }).check();
+  await page.getByRole('button', { name: '保存设备设置' }).click();
+  await page.getByText('设备设置已保存。', { exact: true }).waitFor();
+  await press(3);
+  const count = async () => (await shell('dumpsys', 'notification', '--noredact')).split(/\r?\n/).find(line => line.includes('NotificationRecord(') && line.includes(qa) && line.includes('chat:' + fixture.direct));
+  const send = async note => assert.equal((await fixture.stars('/api/chat/threads/' + fixture.direct + '/messages', 'POST', { text: note })).status, 201);
+  await send('仅供验收的通知正文');
+  await until(count, 'System did not receive a chat notification', 35000);
+  const notices = await shell('dumpsys', 'notification', '--noredact');
+  assert.ok(notices.includes('月明かり收到一条新消息'));
+  assert.ok(!notices.includes('仅供验收的通知正文'));
+  await shell('cmd', 'statusbar', 'expand-notifications');
+  await tapNode('月明かり收到一条新消息');
+  await page.getByText('仅供验收的通知正文', { exact: true }).waitFor();
+  await until(async () => (await fixture.moon('/api/chat/threads/' + fixture.direct)).value.item.unread === 0, 'Unread not synchronized');
+  await press(3);
+  await send('下一张月下的来信');
+  await until(count, 'Second background message was not delivered', 35000);
+  await fixture.moon('/api/chat/threads/' + fixture.direct + '/read', 'POST');
+  await until(async () => !(await count()), 'Other device did not clear the notification');
+  pass('系统实际授权，后台通知默认隐藏正文，点按直达会话，并随另一客户端已读消失');
+
+  stage = 'launcher and native uninstall';
+  assert.match(await shell('dumpsys', 'shortcut'), /id=farewell/);
+  await shell('am', 'start', '-a', 'android.intent.action.VIEW', '-d', 'tsukiakari://farewell', '-n', qa + '/' + component);
+  await page.getByRole('heading', { name: '先别道晚安…', exact: true }).waitFor();
+  await page.waitForFunction(() => document.querySelector('.farewell-panel img')?.naturalWidth > 0);
+  await snap('android-farewell');
+  await page.getByRole('button', { name: '卸载应用' }).click();
+  await page.getByRole('dialog', { name: '前往系统卸载', exact: true }).getByRole('button', { name: '前往系统' }).click();
+  await until(async () => (await shell('dumpsys', 'activity', 'activities')).split(/\r?\n/).some(line => /topResumedActivity.*(?:Uninstall|packageinstaller)/i.test(line)), 'System uninstall confirmation unavailable');
+  await press(4);
+  await page.getByRole('heading', { name: '先别道晚安…', exact: true }).waitFor();
+  pass('桌面快捷入口已注册，真实深链接与插画加载，取消系统卸载后可返回应用');
+  const memory = await shell('dumpsys', 'meminfo', qa);
+  report.totalPssKb = Number(memory.match(/TOTAL PSS:\s+(\d+)/)?.[1] || 0);
+} catch (error) {
+  report.failedStage = stage;
+  console.error('Android verification failed at ' + stage);
+  throw error;
+} finally {
+  if (handle) {
+    await handle.browser.close().catch(() => {});
+    await adb(['forward','--remove','tcp:' + handle.port]).catch(() => {});
+  }
+  await fixture.close();
+  for (const args of [['wm','size','reset'], ['wm','density','reset']]) await shell(...args).catch(() => {});
+  await adb(['reverse','--remove','tcp:' + port]).catch(() => {});
+  await writeFile(join(folder, 'report.json'), JSON.stringify(report, null, 2));
+}

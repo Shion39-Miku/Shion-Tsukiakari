@@ -1,11 +1,14 @@
 import{el,action,icon,showStatus}from'./ui.js';
+import { androidHost } from './chat-android.js';
 const field=(name,input)=>el('label',{class:'field'},el('span',{},name),input);
-export const personalSections={profile:'个人资料',appearance:'外观',notifications:'通知',close:'关闭窗口',connection:'连接状态',memory:'记忆授权',about:'关于月明かり'};
+export const personalSections = androidHost
+ ? { home:'我的',profile:'个人资料',device:'设备通知',connection:'连接状态',memory:'记忆授权',farewell:'暂别月光',about:'关于月明かり' }
+ : {profile:'个人资料',appearance:'外观',notifications:'通知',close:'关闭窗口',connection:'连接状态',memory:'记忆授权',about:'关于月明かり'};
 export const managementSections={overview:'软件概览',users:'用户管理',groups:'群聊管理',friends:'好友关系',personas:'AI 人格／角色卡',service:'服务与 AI 接入'};
-export function createPages({request,account,navigate,social,showAccounts,openModal,connection}){
+export function createPages({request,account,navigate,social,showAccounts,openModal,connection,androidPage}){
  const cache=new Map();
  function layout(root,kind,section){const labels=kind==='settings'?personalSections:managementSections;const nav=el('nav',{class:'page-nav','aria-label':kind==='settings'?'个人设置栏目':'软件管理栏目'});nav.append(el('p',{class:'page-nav-label'},kind==='settings'?'个人设置':'软件管理'));for(const[key,label]of Object.entries(labels)){const b=action(label,undefined,{'aria-current':section===key?'page':null});b.onclick=()=>navigate(kind,{section:key});nav.append(b);}const slot=el('div',{class:'page-content'});root.replaceChildren(nav,slot);return slot;}
- function surface(kind,section,title,children){const key=kind+':'+section;const fragment=el('section',{class:'page-section'},el('header',{class:'page-heading'},el('h2',{},title)),children);if(!['connection','close'].includes(section)&&(kind==='settings'||['personas','service'].includes(section)))cache.set(key,fragment);return fragment;}
+ function surface(kind,section,title,children){const key=kind+':'+section;const fragment=el('section',{class:'page-section'},el('header',{class:'page-heading'},el('h2',{},title)),children);if(!['connection','close','home','device','farewell'].includes(section)&&(kind==='settings'||['personas','service'].includes(section)))cache.set(key,fragment);return fragment;}
  async function render(root,kind,section,supplied,isCurrent){const slot=layout(root,kind,section),key=kind+':'+section;
   if(supplied){slot.append(surface(kind,section,supplied.title,supplied.children));return;}
   if(cache.has(key)){slot.append(cache.get(key));return;}
@@ -15,14 +18,23 @@ export function createPages({request,account,navigate,social,showAccounts,openMo
   };
   try{
    if(kind==='settings'){
+    if (androidPage?.(section, present)) return;
     if(section==='profile')return await social().profile(present);
     if(section==='memory')return await social().memories(present);
     if(['appearance','notifications','close'].includes(section))return await social().settings(section,present);
     if(section==='connection'){const s=await request('/api/chat/session');if(!isCurrent())return;present('连接状态',el('dl',{class:'info-list'},el('dt',{},'聊天服务'),el('dd',{'data-connection-status':''},{online:'实时消息已连接',connecting:'正在连接',offline:'实时消息已断开 · 正在重连'}[connection()]),el('dt',{},'AI 接入'),el('dd',{},s.astrbotConfigured?'AstrBot · 人格由服务器管理':s.aiReady?'独立模型模式':'尚未配置')),account().role==='admin'&&(()=>{const b=action('配置软件服务与 AI','arrow');b.onclick=()=>navigate('software',{section:'service'});return b;})());return;}
-    present('月明かり',el('img',{src:'/assets/brand/tsukiakari-192.png',width:88,height:88,alt:'月明かり应用图标',class:'about-icon'}),el('p',{class:'about-name'},'Tsukiakari · 0.4.2'),el('p',{class:'muted'},'好友私聊、邀请群聊和 AstrBot 人格。'),el('a',{href:'https://github.com/Shion39-Miku/Shion-Tsukiakari',target:'_blank',rel:'noreferrer'},'源码与使用教程'));return;
+    const version = androidHost ? 'Android ' + navigator.userAgent.match(/TsukiakariAndroid\/([\d.]+)/)?.[1] : '0.4.2';
+    present('月明かり',el('img',{src:'/assets/brand/tsukiakari-192.png',width:88,height:88,alt:'月明かり应用图标',class:'about-icon'}),el('p',{class:'about-name'},'Tsukiakari · '+version),el('p',{class:'muted'},'好友私聊、邀请群聊和 AstrBot 人格。'),el('a',{href:'https://github.com/Shion39-Miku/Shion-Tsukiakari',target:'_blank',rel:'noreferrer'},'源码与使用教程'));return;
    }
    if(section==='users'){slot.replaceChildren(surface(kind,section,'用户管理',[]));await showAccounts(slot);return;}
    if(section==='personas')return await social().personaList(present);
+   if(section==='service' && androidHost){
+    const {item}=await request('/api/chat/admin/service');
+    present('服务与 AI 接入',el('p',{class:'muted'},item.hasChatToken?'已配置 AstrBot 聊天连接。':'尚未配置 AstrBot 聊天连接。'),
+      el('p',{},item.hasAdminToken?'已配置人格管理连接。':'尚未配置人格管理连接。'),
+      el('p',{class:'hint'},'连接地址与令牌由聊天服务管理员在服务器配置。人格可从「AI 人格／角色卡」读取和管理。'));
+    return;
+   }
    if(section==='overview'){const v=(await request('/api/chat/admin/overview')).item;slot.replaceChildren(surface(kind,section,'软件概览',[el('p',{class:'muted'},'管理月明かり的服务与成员。网站内容在独立的网站管理中处理。'),el('div',{class:'metric-row'},[['用户',v.users],['群聊',v.groups],['好友关系',v.friends]].map(([n,v])=>el('div',{},el('strong',{},v),el('span',{},n)))),el('div',{class:'service-note'},el('strong',{},'权限与数据'),el('p',{},'管理员可以管理服务与账号。私人聊天内容仍受会话成员权限保护。'))]));return;}
    if(section==='groups'){const v=await request('/api/chat/admin/groups');const search=el('input',{'aria-label':'筛选群聊',placeholder:'筛选群名…'}),rows=el('div');function draw(){rows.replaceChildren(...v.items.filter(g=>g.title.toLowerCase().includes(search.value.toLowerCase())).map(g=>{const rename=action('修改群名');rename.onclick=()=>{const input=el('input',{'aria-label':'新的群名',value:g.title,maxlength:80}),status=el('p',{class:'inline-status'}),save=action('保存修改');save.onclick=async()=>{try{await request('/api/chat/admin/groups/'+g.id,{method:'PATCH',json:{title:input.value}});g.title=input.value;draw();showStatus(status,'群名已保存。','success');}catch(e){showStatus(status,e.message,'error');}};openModal('修改群名',field('群名',input),status,save);};return el('article',{class:'management-row'},el('div',{},el('strong',{},g.title),el('small',{},`${g.members} 位成员 · ${g.aiMembers} 位 AI · 群主 ${g.ownerName}`)),rename);}));if(!rows.childNodes.length)rows.append(el('p',{class:'muted'},'还没有匹配的群聊。'));}search.oninput=draw;draw();slot.replaceChildren(surface(kind,section,'群聊管理',[el('p',{class:'muted'},'仅管理群名及成员统计；不会读取未加入群的聊天正文。'),search,rows]));return;}
    if(section==='friends'){const v=await request('/api/chat/admin/friends');slot.replaceChildren(surface(kind,section,'好友关系',[el('p',{class:'muted'},`${v.pending} 条待处理申请。接受或拒绝由对应用户在通讯录中完成。`),...v.items.map(r=>el('article',{class:'management-row'},el('div',{},el('strong',{},r.a.displayName+' ↔ '+r.b.displayName),el('small',{},r.a.username+' · '+r.b.username)))),!v.items.length&&el('p',{class:'muted'},'还没有好友关系。')]));return;}

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">月明かり</string>
+    <string name="shortcut_hello">先别道晚安…</string>
+    <string name="shortcut_long">月光还在，要再坐一会儿吗？</string>
+    <color name="night">#10121F</color>
+    <color name="petal">#E4B9D2</color>
+    <style name="Theme.Tsukiakari" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">@color/night</item>
+        <item name="android:colorAccent">@color/petal</item>
+        <item name="android:statusBarColor">@color/night</item>
+        <item name="android:navigationBarColor">@color/night</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

@@ -217,7 +217,7 @@ export function createSocialUI({request,account,openModal,openPage,openDetails,h
   lastBadge=next;
   window.hoshifuruDesktop?.setUnread?.(next);
  }
- function start(){clearInterval(heartbeat);noticeReady=false;void loadPrefs().catch(()=>{});heartbeat=setInterval(()=>{if(account())void request('/api/chat/presence/heartbeat',{method:'POST'}).catch(()=>{});},20000);}
+ function start(){clearInterval(heartbeat);noticeReady=false;if(!document.body.classList.contains('android-app')){void loadPrefs().catch(()=>{});heartbeat=setInterval(()=>{if(account())void request('/api/chat/presence/heartbeat',{method:'POST'}).catch(()=>{});},20000);}}
  function stop(){clearInterval(heartbeat);clearTimeout(surfaceTimer);surfaceTimer=null;redraw=null;contacts.reset();noticeReady=false;lastBadge=null;window.hoshifuruDesktop?.setUnread?.({count:0});}
   function connected(value=true){noticeReady=value;}
  return{contacts,profile,groupMembers,aiHub,personaList,memories,settings,reloadSurface,start,stop,connected,notifyMessage,updateBadge};

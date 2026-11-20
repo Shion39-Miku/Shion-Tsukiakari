@@ -6,6 +6,8 @@ import { trackRoute } from './activity.js';
 import { createSocialUI,personAvatar } from './chat-social.js';
 import {createPages,personalSections,managementSections} from './chat-pages.js';
 import { hasDraftWork } from './draft-controls.js';
+import { androidClient } from './chat-android.js';
+import { attachmentBudget, readFiles, storeFiles } from './chat-android-drafts.js';
 
 const name = '月明かり';
 document.title = name;
@@ -70,7 +72,9 @@ const socialUI=createSocialUI({request,account:()=>session,dialog,openModal,open
  onProfile:(profile)=>{if(session)session.profile=profile;drawSidebar();},openThread:(id)=>navigate('chat',{threadId:id}),
  uploadAvatar:(file,key,onProgress)=>xhrUpload({file,kind:'image'},key,onProgress,session)});
 
-const pages=createPages({request,account:()=>session,navigate,social:()=>socialUI,showAccounts,openModal,connection:()=>connectionState});
+const android = androidClient({ account: () => session, request, navigate, contacts: () => socialUI.contacts.open(), modal: openModal, confirm: confirmModal,
+  active: () => activeThread, visibility: hidden => { nativeHidden = hidden; onVisibilityChanged(); }, refreshRead: markRead, logout: confirmLogout });
+const pages=createPages({request,account:()=>session,navigate,social:()=>socialUI,showAccounts,openModal,connection:()=>connectionState,androidPage:android?.page});
 function openPage(section,title,...children){if(dialog.open)dialog.close();details.hidden=true;return navigate(['personas'].includes(section)?'software':'settings',{section,surface:{title,children}});}
 function openDetails(title,...children){const close=iconButton('close','关闭会话详情');close.onclick=()=>details.hidden=true;details.replaceChildren(el('header',{class:'details-heading'},el('h2',{},title),close),...children.flat(Infinity).filter(v=>v!==false&&v!=null));details.hidden=false;close.focus();}
 addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.querySelector('dialog[open]')&&!details.hidden){details.hidden=true;header.querySelector('[aria-label="查看群成员"]')?.focus();}});
@@ -79,7 +83,7 @@ function appBrand() {
     el('div', {}, el('strong', {}, name), el('small', {}, 'TSUKIAKARI')));
 }
 function avatar(username) { return el('span', { class: 'account-avatar', 'aria-hidden': true }, username.slice(0, 1).toUpperCase()); }
-function closeSidebar() { document.body.classList.remove('sidebar-open'); sidebar.inert = matchMedia('(max-width:760px)').matches; document.querySelector('#sidebar-shade').hidden = true; header.querySelector('.mobile-menu')?.setAttribute('aria-expanded', 'false'); }
+function closeSidebar() { document.body.classList.remove('sidebar-open'); sidebar.inert = !android && matchMedia('(max-width:760px)').matches; document.querySelector('#sidebar-shade').hidden = true; header.querySelector('.mobile-menu')?.setAttribute('aria-expanded', 'false'); }
 document.querySelector('#sidebar-shade').onclick = closeSidebar;
 function openModal(title, ...children) {
   dialog.classList.remove('wide-dialog');
@@ -95,8 +99,15 @@ function confirmModal(title, description, label, work, extra) {
   openModal(title, el('p', {}, description), extra, status, el('footer', { class: 'dialog-footer' }, cancel, confirm));
 }
 
-function showLogin() {
+function confirmLogout() {
+  confirmModal('退出登录', '下次登录可继续聊天。', '退出登录', async () => {
+    await request('/api/chat/logout', { method: 'POST' }); showLogin(true);
+  });
+}
+
+function showLogin(explicit = false) {
   accountVersion++; routeVersion++;
+  android?.logout(explicit === true);
   foregroundRequest?.abort(); threadRefresh?.controller.abort(); activeSendTicket?.controller.abort();
   threadRefresh = sessionRefresh = threadListRequest = null; refreshListAgain = false;
   for (const timer of [refreshTimer, activeTimer, readTimer, reconnectTimer]) clearTimeout(timer);
@@ -120,7 +131,18 @@ function showLogin() {
   const status = el('p', { class: 'inline-status', role: 'status' });
   const form = el('form', { class: 'app-login-form' }, appBrand(), el('h1', {}, '今夜，也在这里相见。'), el('p', {}, '登录后，回到属于你的聊天与收藏。'),
     el('label', { class: 'field' }, el('span', {}, '账号'), username), el('label', { class: 'field' }, el('span', {}, '密码'), password), submit, status,
-    el('div', { class: 'app-login-note' }, '普通账号由站长开通 · 管理员使用现有网站账号', el('br'), el('a', { href: '/' }, '逛逛詩音の月光庭院')));
+    el('div', { class: 'app-login-note' }, '普通账号由站长开通 · 管理员使用现有网站账号', el('br'),
+      android ? android.loginAction() : el('a', { href: '/' }, '逛逛詩音の月光庭院')));
+  if (android) {
+    const retry = action('重新连接');
+    retry.onclick = async () => {
+      retry.disabled = true;
+      try { await enter(); }
+      catch (error) { showStatus(status, error.status === 401 ? '请登录后继续。' : error.message, 'error'); }
+      finally { retry.disabled = false; }
+    };
+    form.append(retry);
+  }
   form.onsubmit = async (event) => {
     event.preventDefault(); submit.disabled = true; showStatus(status, '正在核验账号…');
     try { await request('/api/chat/login', { method: 'POST', json: { username: username.value.trim(), password: password.value } }); password.value = ''; await enter(); }
@@ -133,6 +155,7 @@ function showLogin() {
 
 function drawRail(){
   const rail = document.querySelector('#app-rail');
+  if (android) return android.rail(rail);
   if (!rail.firstElementChild) {
     const brand = el('button', { class: 'rail-brand', type: 'button', 'aria-label': '月明かり · 返回聊天', title: '月明かり' },
       image('/assets/brand/tsukiakari-64.png', '', { width: 38, height: 38 }));
@@ -150,9 +173,7 @@ function drawRail(){
     const profile = el('button', { type: 'button', class: 'rail-button rail-avatar', 'aria-label': '编辑个人资料' });
     profile.onclick = settings.onclick;
     const logout = el('button', { class: 'rail-button', type: 'button', 'aria-label': '退出登录', title: '退出登录' }, icon('back'));
-    logout.onclick = () => confirmModal('退出登录', '下次登录可继续聊天。', '退出登录', async () => {
-      await request('/api/chat/logout', { method: 'POST' }); showLogin();
-    });
+    logout.onclick = confirmLogout;
     rail.replaceChildren(brand, nav, el('span', { class: 'rail-spacer' }), settings, profile, logout);
   }
   const person = session.profile || { username: session.username };
@@ -177,8 +198,9 @@ function drawSidebar(){
  sidebarAccount=session.key;
  threadKind = filterOrder.some(([key]) => key === saved) ? saved : 'all';
  const add=iconButton('plus','新建会话');add.onclick=newConversation;
+ if (android) try { threadQuery = localStorage.getItem('android-search:' + session.key) || ''; } catch {}
  const search=el('input',{class:'thread-search','aria-label':'筛选会话',placeholder:'搜索会话…',value:threadQuery});
- search.oninput=()=>{threadQuery=search.value;applyThreadFilter();};
+ search.oninput=()=>{threadQuery=search.value;applyThreadFilter();if(android)try{localStorage.setItem('android-search:'+session.key,threadQuery);}catch{}};
  const filters=el('div',{class:'conversation-filters',role:'group','aria-label':'会话类型'});
  for(const [key,title] of filterOrder){
    const button=action(title,undefined,{'data-kind':key});
@@ -287,8 +309,10 @@ function drawHeader(){if(!session)return;
  if (signature === headerSignature) return;
  headerSignature = signature;
  const actions=el('div',{class:'app-header-actions'});if(view==='chat'&&t){if(kind==='group'){const members=iconButton('heart','查看群成员');members.onclick=groupMembers;actions.append(members);}const more=iconButton('down','会话操作');more.onclick=()=>{const controls=el('div',{class:'conversation-menu'});if(kind!=='direct'){const choose=action(kind==='group'?'邀请AI入群':'选择AI人格','sparkle');choose.onclick=()=>socialUI.aiHub(t.id);controls.append(choose);}if(t.owner===session.key&&kind!=='direct'){const rename=action('重命名对话');rename.onclick=renameThread;controls.append(rename);}const remove=action(kind==='group'?(t.owner===session.key?'解散群聊':'退出群聊'):'移除对话','trash');remove.onclick=removeThread;controls.append(remove);openModal('会话操作',controls);};actions.append(more);}
- if(view!=='chat'){const back=action('返回聊天','back',{class:'button header-back'});back.onclick=()=>navigate('chat');actions.append(back);}
- header.replaceChildren(el('div',{class:'app-header-title'},view==='chat'&&menu,el('div',{class:'app-header-copy'},el('h1',{title},title),el('small',{},view==='chat'&&kind&&el('span',{class:'header-identity kind-'+kind},labels[kind]),note))),actions);
+ if(view!=='chat'){const back=action('返回聊天','back',{class:'button header-back'});back.onclick=android?.list||(()=>navigate('chat'));actions.append(back);}
+ const back = android && view === 'chat' ? iconButton('back','返回会话列表',{class:'icon-button android-chat-back'}) : null;
+ if (back) back.onclick = android.list;
+ header.replaceChildren(el('div',{class:'app-header-title'},back||view==='chat'&&menu,el('div',{class:'app-header-copy'},el('h1',{title},title),el('small',{},view==='chat'&&kind&&el('span',{class:'header-identity kind-'+kind},labels[kind]),note))),actions);
 }
 
 async function loadThreads(more = false) {
@@ -310,6 +334,7 @@ async function loadThreads(more = false) {
       unread = result.totalUnread;
     }
     threads = [...merged.values()];
+    android?.read(threads);
     threadsLoaded = true;
     threadListError = false;
     threadLimit = limit;
@@ -365,10 +390,10 @@ conversation.addEventListener('scroll', () => {
 }, { passive: true });
 function markRead() {
   clearTimeout(readTimer);
-  if (!readPending || catchingUp || !activeThread || pendingThreadId || view !== 'chat' || windowHidden() || !document.hasFocus() || !atLatest()) return;
+  if (!readPending || catchingUp || !activeThread || pendingThreadId || view !== 'chat' || android && !android.isReading() || windowHidden() || !document.hasFocus() || !atLatest()) return;
   const id = activeThread.id, version = routeVersion;
   readTimer = setTimeout(async () => {
-    if (routeVersion !== version || pendingThreadId || windowHidden() || !document.hasFocus() || !atLatest()) return;
+    if (routeVersion !== version || pendingThreadId || android && !android.isReading() || windowHidden() || !document.hasFocus() || !atLatest()) return;
     const through = messageOrder.at(-1);
     if (!through) return;
     readPending = false;
@@ -613,18 +638,56 @@ function discardPreviews(files) {
   for (const entry of files) if (entry.preview) URL.revokeObjectURL(entry.preview);
 }
 function draftStorage(id) { return 'chat-input:' + session.key + ':' + id; }
+function clearDraftStorage(id) {
+  const path = draftStorage(id);
+  localStorage.removeItem(path);
+  if (android) localStorage.removeItem(path + ':state');
+}
 function saveDraft(draft) {
   try {
     if (draft.text) localStorage.setItem(draftStorage(draft.id), draft.text);
     else localStorage.removeItem(draftStorage(draft.id));
+    if (android) {
+      const key = draftStorage(draft.id) + ':state';
+      if (draft.text || draft.files.length || draft.restoring) localStorage.setItem(key, JSON.stringify({ key: draft.key, mention: draft.mention, count: draft.count || draft.files.length }));
+      else localStorage.removeItem(key);
+    }
   } catch { /* The draft remains available in this window. */ }
+}
+async function cacheAndroidFiles(draft) {
+  if (!android || !session) return;
+  const path = draftStorage(draft.id);
+  draft.count = draft.files.length;
+  saveDraft(draft);
+  try {
+    const size = draft.files.reduce((total, entry) => total + entry.file.size, 0);
+    await storeFiles(path, size <= attachmentBudget ? draft.files : []);
+    if (size > attachmentBudget) throw Error('附件超出本机恢复容量，重启后需要重新选择。');
+  } catch (error) { if (composerDraft === draft) toast(error.message || '此设备无法缓存选中的附件。', 'error'); }
 }
 function restoreDraft(id = '') {
   let draft = inputDrafts.get(id);
   if (!draft) {
-    let text = '';
-    try { text = localStorage.getItem(draftStorage(id)) || ''; } catch {}
+    let text = '', state;
+    const path = draftStorage(id);
+    try { text = localStorage.getItem(path) || ''; if (android) state = JSON.parse(localStorage.getItem(path + ':state')); } catch {}
     draft = { id, text, files: [], mention: false, key: crypto.randomUUID(), error: '', progress: null };
+    if (state && /^[0-9a-f-]{36}$/i.test(state.key)) {
+      draft.key = state.key; draft.mention = state.mention === true;
+      draft.count = Number.isSafeInteger(state.count) ? Math.min(8, Math.max(0, state.count)) : 0;
+      if (draft.count) {
+        draft.restoring = true;
+        const actor = accountVersion;
+        const recover = draft;
+        void readFiles(path).catch(() => []).then(files => {
+          if (accountVersion !== actor || inputDrafts.get(id) !== recover) return;
+          recover.restoring = false;
+          recover.files = files.map(entry => ({ ...entry, preview: entry.kind === 'image' ? URL.createObjectURL(entry.file) : null }));
+          if (recover.files.length !== recover.count) recover.error = '有附件未能恢复。请重新选择后发送。';
+          if (composerDraft === recover) { drawFiles(); reflectComposer(); }
+        });
+      }
+    }
     inputDrafts.set(id, draft);
   }
   composerDraft = draft;
@@ -654,6 +717,7 @@ function drawFiles() {
       if (draft !== composerDraft || activeSendTicket?.draft === draft) return;
       discardPreviews([entry]); draft.files.splice(index, 1);
       draft.key = crypto.randomUUID(); draft.error = '';
+      void cacheAndroidFiles(draft);
       drawFiles(); reflectComposer();
     };
     return el('div', { class: 'chat-attachment' }, entry.preview ? image(entry.preview, '', { width: 30, height: 30 }) : icon(entry.kind === 'audio' ? 'music' : 'mail', 15), el('span', {}, entry.file.name), remove);
@@ -663,8 +727,9 @@ function reflectComposer() {
   if (!composerDraft) return;
   const ownSend = activeSendTicket?.draft === composerDraft;
   const locked = Boolean(ownSend || pendingThreadId);
-  sendButton.disabled = Boolean(activeSendTicket || pendingThreadId || (!textarea.value.trim() && !composerDraft.files.length));
-  textarea.disabled = fileInput.disabled = attachButton.disabled = mention.disabled = locked;
+  sendButton.disabled = Boolean(activeSendTicket || pendingThreadId || composerDraft.restoring || (android && composerDraft.count > composerDraft.files.length) || (!textarea.value.trim() && !composerDraft.files.length));
+  fileInput.disabled = attachButton.disabled = mention.disabled = locked || Boolean(composerDraft.restoring);
+  if (android) textarea.readOnly = locked; else textarea.disabled = locked;
   const copy = ownSend ? '发送中' : '发送';
   if (sendButton.lastChild.textContent !== copy) sendButton.lastChild.textContent = copy;
   const allowMention = activeThread?.kind === 'group' && !session.astrbotConfigured && session.aiReady;
@@ -672,7 +737,7 @@ function reflectComposer() {
   const textHint = activeThread?.kind === 'direct' ? '给好友写条消息…' : activeThread?.kind === 'group' ? '给群里写条消息…' : '写下想说的话，或输入「查看音乐」…';
   if (textarea.placeholder !== textHint) textarea.placeholder = textHint;
   stopButton.hidden = !generating.size;
-  const status = composerDraft.error || (pendingThreadId ? '正在打开会话…' : activeSendTicket && !ownSend ? '另一段对话正在发送，可继续编辑。' : '');
+  const status = composerDraft.error || (composerDraft.restoring ? '正在恢复附件…' : pendingThreadId ? '正在打开会话…' : activeSendTicket && !ownSend ? '另一段对话正在发送，可继续编辑。' : '');
   if (composerStatus.textContent !== status) composerStatus.textContent = status;
   composerStatus.classList.toggle('has-error', Boolean(composerDraft.error));
 }
@@ -689,7 +754,7 @@ function buildComposer() {
     reflectComposer();
   };
   textarea.onkeydown = event => {
-    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    if (event.key !== 'Enter' || event.shiftKey || android && !event.ctrlKey || event.isComposing || event.keyCode === 229) return;
     event.preventDefault();
     if (!event.repeat && !sendButton.disabled) composer.requestSubmit();
   };
@@ -706,6 +771,7 @@ function buildComposer() {
       });
       for (const entry of prepared) if (entry.kind === 'image') entry.preview = URL.createObjectURL(entry.file);
       draft.files.push(...prepared); draft.key = crypto.randomUUID(); draft.error = '';
+      void cacheAndroidFiles(draft);
       drawFiles(); reflectComposer();
     } catch (error) { toast(error.message, 'error'); }
     finally { fileInput.value = ''; }
@@ -715,7 +781,7 @@ function buildComposer() {
   help.onclick = () => openModal('助理指令', el('p', {}, '输入「查看音乐」「查看游戏」「查看猫猫图」，或用「播放 歌名」寻找歌曲。'),
     session.role === 'admin' && el('p', {}, '网站管理指令可在 AI 私聊中使用。输入 /帮助 可查看完整列表。'));
   mention = el('input', { type: 'checkbox', name: 'mentionAssistant' });
-  mention.onchange = () => { composerDraft.mention = mention.checked; composerDraft.key = crypto.randomUUID(); };
+  mention.onchange = () => { composerDraft.mention = mention.checked; composerDraft.key = crypto.randomUUID(); if(android) saveDraft(composerDraft); };
   sendButton = action('发送', 'upload', { type: 'submit', class: 'button send-button', 'aria-label': '发送消息' });
   stopButton = action('停止回复', 'stop', { class: 'button stop-reply', hidden: true });
   stopButton.onclick = async () => {
@@ -730,7 +796,7 @@ function buildComposer() {
   composer.replaceChildren(el('div', { class: 'composer-box' }, textarea, fileList, progress, el('div', { class: 'composer-toolbar' },
     el('div', { class: 'composer-tools' }, attachButton, help, fileInput, el('label', { class: 'mention-option', hidden: true }, mention, '请助理回复')),
     el('div', { class: 'composer-actions' }, stopButton, sendButton))),
-    el('div', { class: 'composer-note' }, composerStatus, el('span', {}, 'Enter 发送 · Shift + Enter 换行')));
+    el('div', { class: 'composer-note' }, composerStatus, el('span', {}, android ? 'Ctrl + Enter 发送' : 'Enter 发送 · Shift + Enter 换行')));
   composer.onsubmit = sendMessage;
   restoreDraft();
 }
@@ -766,7 +832,7 @@ function drawUploadProgress() {
 }
 async function sendMessage(event) {
   event.preventDefault();
-  if (activeSendTicket || pendingThreadId || !session || !composerDraft) return;
+  if (activeSendTicket || pendingThreadId || !session || !composerDraft || android && sendButton.disabled) return;
   const draft = composerDraft, files = [...draft.files], key = draft.key, actor = session, version = accountVersion;
   const text = draft.text.trim() || (files.length ? '分享一些文件。' : '');
   if (!text) return;
@@ -780,9 +846,11 @@ async function sendMessage(event) {
       const result = await request('/api/chat/threads', { ...options, method: 'POST', json: {}, key: key + '_thread' });
       if (!valid()) return;
       inputDrafts.delete('');
-      try { localStorage.removeItem(draftStorage('')); } catch {}
+      const original = draftStorage('');
       draft.id = result.item.id;
       inputDrafts.set(draft.id, draft); saveDraft(draft);
+      if (android) { void cacheAndroidFiles(draft).then(() => storeFiles(original, []).catch(() => {})); android.layout('chat', draft.id); }
+      try { clearDraftStorage(''); } catch {}
       scheduleThreads();
       if (!activeThread && !pendingThreadId) {
         activeThread = { ...result.item, members: [{ key: actor.key, username: actor.username }] };
@@ -803,6 +871,7 @@ async function sendMessage(event) {
         if (composerDraft === draft) drawUploadProgress();
       }, actor, controller.signal);
       ids.push(entry.uploaded.id); completed += entry.file.size;
+      if (android) void cacheAndroidFiles(draft);
     }
     if (!valid()) return;
     const result = await request('/api/chat/threads/' + targetId + '/messages', {
@@ -811,8 +880,9 @@ async function sendMessage(event) {
     });
     if (!valid()) return;
     discardPreviews(draft.files);
-    draft.files = []; draft.text = ''; draft.mention = false; draft.key = crypto.randomUUID();
+    draft.files = []; draft.text = ''; draft.mention = false; draft.key = crypto.randomUUID(); draft.count = 0;
     saveDraft(draft);
+    if (android) void cacheAndroidFiles(draft);
     if (composerDraft === draft) restoreDraft(targetId);
     if (activeThread?.id === targetId && view === 'chat' && !windowHidden()) {
       applyMessages(result.items); scrollToBottom();
@@ -825,7 +895,7 @@ async function sendMessage(event) {
       activeSendTicket = null; draft.progress = null;
       if (composerDraft === draft) {
         drawUploadProgress();
-        if (view === 'chat' && !pendingThreadId) textarea.focus();
+        if (!android && view === 'chat' && !pendingThreadId) textarea.focus();
       }
       reflectComposer();
     }
@@ -892,6 +962,7 @@ function forgetThread(id) {
   resetTimeline();
   restoreDraft();
   welcome();
+  android?.layout(view, null);
   writeRoute({ replace: true });
   drawHeader(); drawThreadList(); setDesktopContext();
 }
@@ -926,6 +997,7 @@ async function navigate(next, options = {}) {
     resetTimeline(); restoreDraft(); welcome();
   }
   if (view === 'chat' && target && target !== activeThread?.id) pendingThreadId = target;
+  android?.layout(view, target, options);
   if (!pendingThreadId && !options.fromHistory) writeRoute();
   drawHeader(); drawSidebar(); reflectComposer(); setDesktopContext();
   if (pendingThreadId) {
@@ -942,6 +1014,7 @@ async function navigate(next, options = {}) {
     } finally {
       if (isCurrent() && foregroundRequest === controller) {
         foregroundRequest = null; pendingThreadId = null;
+        android?.layout(view, activeThread?.id, options);
         drawHeader(); drawThreadList(); reflectComposer(); setDesktopContext();
       }
     }
@@ -987,7 +1060,7 @@ async function checkSession() {
   if (sessionRefresh === job) sessionRefresh = null;
 }
 function openChatEvents() {
-  if (!session) return;
+  if (!session || android && windowHidden()) return;
   clearTimeout(reconnectTimer);
   source?.close();
   const stream = source = new EventSource('/api/chat/events');
@@ -1003,7 +1076,7 @@ function openChatEvents() {
   stream.addEventListener('message', event => {
     if (source !== stream || !session) return;
     const value = JSON.parse(event.data);
-    socialUI.notifyMessage(value);
+    if (android) android.showNotice(value, threads); else socialUI.notifyMessage(value);
     const notice = value.item.metadata?.noticeEventId;
     if (notice && !seenNotices.has(notice)) { seenNotices.add(notice); toast(value.item.metadata.questions ? '庭院收到新的来信，已放入「庭院来信」。' : '庭院更新已同步，批次清单已放入「庭院来信」。'); }
     queueMessage(value);
@@ -1038,6 +1111,7 @@ function openChatEvents() {
 }
 connectionNotice.querySelector('button').onclick = openChatEvents;
 function connect() {
+  if (android && windowHidden()) return;
   setConnectionState('connecting');
   openChatEvents();
   updates?.close(); updates = new EventSource('/api/public/updates');
@@ -1064,8 +1138,11 @@ async function enter() {
   const url = new URL(location.href); section = url.searchParams.get('section') || 'music';
   const wanted = url.pathname === '/chat/manage' ? 'manage' : url.searchParams.get('view') || 'chat';
   if(url.searchParams.get('t')&&wanted!=='chat')await loadThread(url.searchParams.get('t')).catch(()=>{});
-  try { await navigate(wanted, { threadId: url.searchParams.get('t') || undefined,section:url.searchParams.get('section')||undefined, panel: url.searchParams.get('panel') || undefined, fromHistory: true }); }
+  const saved = android?.restore();
+  const restored = !url.search && wanted === 'chat' ? saved : null;
+  try { await navigate(wanted, { threadId: url.searchParams.get('t') || restored?.thread, section:url.searchParams.get('section')||undefined, panel: url.searchParams.get('panel') || undefined, fromHistory: true, androidList: restored?.list }); }
   catch (error) { toast(error.message, 'error'); await navigate('chat'); }
+  if (session) { android?.session(session); android?.read(threads); }
 }
 addEventListener('popstate', () => {
   if (!session) return;
@@ -1087,7 +1164,9 @@ function onVisibilityChanged() {
     clearTimeout(readTimer);
     threadRefresh?.controller.abort();
     pendingMessages.clear();
+    if (android) { clearTimeout(reconnectTimer); source?.close(); updates?.close(); source = updates = null; }
   } else if (session) {
+    if (android && !source) { connect(); scheduleThreads(); }
     drawSidebar();
     flushMessageQueue();
     if (activeThread && view === 'chat' && !messageOrder.length) void refreshActiveThread();
@@ -1101,6 +1180,10 @@ window.hoshifuruDesktop?.onVisibility?.(hidden => {
 });
 addEventListener('chat-auth-expired', () => void checkSession());
 matchMedia('(max-width:760px)').addEventListener('change', () => closeSidebar());
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/chat-worker.js', { scope: '/chat' }).catch(() => {});
+if (android) android.bindSwipe(sidebar, delta => {
+  const at = filterOrder.findIndex(([key]) => key === threadKind);
+  if (filterOrder[at + delta]) chooseThreadKind(filterOrder[at + delta][0]);
+});
+if (!android && 'serviceWorker' in navigator) navigator.serviceWorker.register('/chat-worker.js', { scope: '/chat' }).catch(() => {});
 setTimeout(() => document.querySelector('#app-boot')?.remove(), 950);
 enter().catch(() => showLogin());

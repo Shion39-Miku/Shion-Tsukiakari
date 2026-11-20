@@ -1,7 +1,7 @@
 // Loaded by the page and by the sandboxed desktop preload bundle.
 globalThis.TsukiakariDialogs = (() => {
   const motions = new WeakMap();
-  const reduceMotion = () => document.documentElement.classList.contains('reduce-motion')
+  const reduceMotion = () => document.documentElement.matches('.reduce-motion, .android-reduce')
     || matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function animate(element, frames, duration = 210) {

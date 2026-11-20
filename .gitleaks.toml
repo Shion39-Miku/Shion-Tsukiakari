@@ -1,0 +1,84 @@
+title = "Tsukiakari repository security"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "project-literal-credential"
+description = "Quoted application credential"
+regex = '''(?i)\b(?:[a-z][a-z0-9_.-]*[_-])?(?:api[_-]?key|(?:access|refresh|auth|chat|admin|bot)[_-]?token|(?:session|webhook|client)[_-]?secret|password|passwd|token|secret)["']?\s*[:=]\s*["']([a-z0-9][^"'\r\n]{7,255})["']'''
+secretGroup = 1
+
+[[rules.allowlists]]
+  description = "Reviewed example or loopback test fixture only"
+  condition = "AND"
+  regexTarget = "secret"
+  paths = ["(?:^|/)bot/astrbot_plugin_moonlit/config\\.example\\.json$"]
+  regexes = ["^REPLACE_WITH_READER_TOKEN$", "^REPLACE_WITH_WRITER_TOKEN$", "^REPLACE_WITH_REVIEWER_TOKEN$", "^REPLACE_WITH_NOTIFIER_TOKEN$"]
+
+[[rules.allowlists]]
+  description = "Reviewed example or loopback test fixture only"
+  condition = "AND"
+  regexTarget = "secret"
+  paths = ["(?:^|/)docs/bot-api\\.md$"]
+  regexes = ["^REPLACE_WITH_RANDOM_WRITE_TOKEN$", "^REPLACE_WITH_RANDOM_REVIEW_TOKEN$", "^REPLACE_WITH_RANDOM_LISTEN_TOKEN$"]
+
+[[rules.allowlists]]
+  description = "Reviewed example or loopback test fixture only"
+  condition = "AND"
+  regexTarget = "secret"
+  paths = ["(?:^|/)scripts/test_chat_gateway\\.py$"]
+  regexes = ["^local\\-test\\-$"]
+
+[[rules.allowlists]]
+  description = "Reviewed example or loopback test fixture only"
+  condition = "AND"
+  regexTarget = "secret"
+  paths = ["(?:^|/)test/desktop\\.test\\.mjs$"]
+  regexes = ["^bad\\\\r\\\\nheader$"]
+
+[[rules.allowlists]]
+  description = "Reviewed example or loopback test fixture only"
+  condition = "AND"
+  regexTarget = "secret"
+  paths = ["(?:^|/)test/chat\\.test\\.mjs$"]
+  regexes = ["^test\\-model\\-secret$"]
+
+[[rules.allowlists]]
+  description = "Reviewed example or loopback test fixture only"
+  condition = "AND"
+  regexTarget = "secret"
+  paths = ["(?:^|/)scripts/check-tsukiakari\\.mjs$"]
+  regexes = ["^tsukiakari\\-demo\\-chat\\-token\\-0000000000000$", "^tsukiakari\\-demo\\-admin\\-token\\-000000000000$"]
+
+[[rules.allowlists]]
+  description = "Reviewed example or loopback test fixture only"
+  condition = "AND"
+  regexTarget = "secret"
+  paths = ["(?:^|/)test/chat-social\\.test\\.mjs$"]
+  regexes = ["^chat\\-connector\\-token$", "^admin\\-connector\\-token$"]
+
+[[rules]]
+id = "project-env-credential"
+description = "Credential value in env-style configuration"
+regex = '''(?im)^[ \t]*(?:export[ \t]+)?(?:[a-z][a-z0-9_.-]*[_-])?(?:api[_-]?key|(?:access|refresh|auth|chat|admin|bot)[_-]?token|(?:session|webhook|client)[_-]?secret|password|passwd|token|secret|_authToken)[ \t]*=[ \t]*["']?([a-z0-9][a-z0-9_./+@%!?=-]{7,255})["']?[ \t]*\r?$'''
+secretGroup = 1
+
+[[rules]]
+id = "project-credential-url"
+description = "User and password embedded in a service URL"
+regex = '''(?i)\b(?:https?|ssh|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s/:@"'<>]+:([^\s/@"'<>]+)@'''
+secretGroup = 1
+
+[[rules.allowlists]]
+  description = "Reviewed example or loopback test fixture only"
+  condition = "AND"
+  regexTarget = "secret"
+  paths = ["(?:^|/)test/desktop\\.test\\.mjs$"]
+  regexes = ["^pass$"]
+
+[[rules]]
+id = "project-private-endpoint"
+description = "Private network service URL"
+regex = '''(?i)\b(?:https?|ssh|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://(?:[^\s/@"'<>]+@)?(10(?:\.[0-9]{1,3}){3}|(?:192\.168|172\.(?:1[6-9]|2[0-9]|3[01]))(?:\.[0-9]{1,3}){2}|[a-z0-9][a-z0-9.-]*\.(?:internal|lan)\b|\[(?:fc|fd|fe[89ab])[0-9a-f:]+\])'''
+secretGroup = 1

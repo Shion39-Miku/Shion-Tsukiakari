@@ -8,6 +8,11 @@
   },
   "packageManager": "pnpm@11.25.0",
   "scripts": {
+    "android:build": "node scripts/build-android.mjs",
+    "check:android:ui": "node --disable-warning=ExperimentalWarning scripts/check-android-ui.mjs",
+    "check:android:device": "node --disable-warning=ExperimentalWarning scripts/check-android-device.mjs",
+    "security:setup": "node scripts/setup-security.mjs",
+    "security:check": "node --disable-warning=ExperimentalWarning scripts/security-check.mjs",
     "start": "node --disable-warning=ExperimentalWarning server/index.mjs",
     "start:local": "node --disable-warning=ExperimentalWarning scripts/start-local.mjs",
     "start:app": "node --disable-warning=ExperimentalWarning scripts/start-local.mjs --chat --app",

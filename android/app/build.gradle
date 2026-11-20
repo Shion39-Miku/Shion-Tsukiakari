@@ -1,0 +1,44 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'wiki.shion.tsukiakari'
+    compileSdk 35
+    buildToolsVersion '35.0.0'
+
+    defaultConfig {
+        applicationId 'wiki.shion.tsukiakari'
+        minSdk 28
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+    }
+    buildFeatures { buildConfig true }
+    buildTypes {
+        debug { applicationIdSuffix '.qa' }
+        testRelease {
+            initWith release
+            signingConfig signingConfigs.debug
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    sourceSets.main {
+        assets.srcDir layout.buildDirectory.dir('generated/tsukiakari/assets')
+        res.srcDir layout.buildDirectory.dir('generated/tsukiakari/res')
+    }
+}
+
+def workspace = rootProject.projectDir.parentFile
+def prepared = layout.buildDirectory.dir('generated/tsukiakari')
+tasks.register('prepareChatAssets', Exec) {
+    workingDir workspace
+    commandLine 'node', 'scripts/prepare-android.mjs', prepared.get().asFile.absolutePath
+    inputs.files fileTree(new File(workspace, 'public')), new File(workspace, 'content/assets/together.png'),
+        new File(workspace, 'scripts/prepare-android.mjs')
+    outputs.dir prepared
+}
+tasks.named('preBuild').configure { dependsOn 'prepareChatAssets' }

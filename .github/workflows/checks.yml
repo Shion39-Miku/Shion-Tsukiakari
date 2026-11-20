@@ -4,27 +4,77 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/setup@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1 # v3
         with:
           version: '11.25.0'
           runtime: 'node@24.22.3'
           install: false
+      - run: pnpm security:setup --ci
+      - run: pnpm security:check history
       - run: pnpm install --frozen-lockfile
       - run: pnpm --dir desktop install --frozen-lockfile
       - run: node desktop/node_modules/electron/install.js
       - run: pnpm test
       - run: pnpm build
       - run: pnpm package:desktop
-      - uses: actions/upload-artifact@v7
+      - run: pnpm security:check release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: Tsukiakari-Windows
           path: |
             artifacts/Tsukiakari-*/Tsukiakari-*-Setup.exe
             artifacts/Tsukiakari-*/Tsukiakari-*-Portable.exe
           if-no-files-found: error
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1 # v3
+        with:
+          version: '11.25.0'
+          runtime: 'node@24.22.3'
+          install: false
+      - run: pnpm install --frozen-lockfile
+      - name: Build APKs and test with Android 15
+        shell: bash
+        run: |
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+          image='system-images;android-35;default;x86_64'
+          sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0' 'emulator' "$image"
+          pnpm android:build
+          pnpm android:build --debug
+          test -c /dev/kvm
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          "$ANDROID_HOME/emulator/emulator" -accel-check
+          echo no | avdmanager create avd --force --name tsukiakari_ci --package "$image"
+          mkdir -p artifacts/android/device-check
+          "$ANDROID_HOME/emulator/emulator" -avd tsukiakari_ci -port 5554 -accel on -no-window -no-audio \
+            -no-snapshot -no-metrics -no-boot-anim -gpu swiftshader_indirect \
+            > artifacts/android/device-check/emulator.log 2>&1 &
+          trap 'adb -s emulator-5554 emu kill >/dev/null 2>&1 || true' EXIT
+          timeout 250 adb -s emulator-5554 wait-for-device
+          timeout 250 bash -c 'until [ "$(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d "\r")" = 1 ]; do sleep 3; done'
+          pnpm check:android:device artifacts/android/*/*-Android.apk artifacts/android/*/*-QA.apk
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: Tsukiakari-Android-QA
+          path: |
+            artifacts/android/device-check/report.json
+            artifacts/android/device-check/screens/*.png
+          if-no-files-found: ignore
