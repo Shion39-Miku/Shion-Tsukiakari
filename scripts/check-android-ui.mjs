@@ -57,6 +57,24 @@ try {
   assert.ok(Math.min(...widths) > 65 && Math.max(...widths) - Math.min(...widths) < 2);
   for (const kind of ['AI','群聊','全部','好友']) await pick(kind).click();
   await friend().click(); await page.getByText('我把新歌放进收藏了，有空一起听。').waitFor();
+  const historyRequest = Promise.withResolvers(), lateResponse = Promise.withResolvers();
+  await page.route('**/api/chat/threads/' + fixture.direct + '?before=*', async route => {
+    const response = await route.fetch();
+    historyRequest.resolve();
+    await lateResponse.promise;
+    await route.fulfill({ response }).catch(() => {});
+  }, { times: 1 });
+  const older = page.getByRole('button', { name: '查看更早的消息', exact: true });
+  await older.click();
+  try {
+    await historyRequest.promise;
+    await page.getByRole('button', { name: '返回会话列表', exact: true }).click();
+    await friend().click();
+    await older.click();
+    await page.getByText('演示历史 · 第 1 条', { exact: true }).waitFor();
+  } finally { lateResponse.resolve(); }
+  assert.equal(await page.getByText('演示历史 · 第 1 条', { exact: true }).count(), 1);
+  pass('切页取消旧历史请求，返回后继续分页且不重复消息');
   await draft.fill('留到下一次相见的草稿 🌙');
   await page.getByRole('button', { name: '返回会话列表', exact: true }).click();
   assert.equal(await pick('好友').getAttribute('aria-pressed'), 'true');

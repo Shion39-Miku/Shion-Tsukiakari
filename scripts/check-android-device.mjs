@@ -146,6 +146,7 @@ try {
   for (const type of ['AI','群聊','全部','好友']) await filter(type).click();
   await listing('晚灯 · 演示').click();
   await page.getByText('我把新歌放进收藏了，有空一起听。', { exact: true }).waitFor();
+  await snap('android-phone-chat');
   await composer().click();
   await composer().fill('系统重开后仍在的演示草稿。');
   assert.equal(await page.getByRole('button', { name: '发送消息', exact: true }).isVisible(), true);

@@ -54,14 +54,16 @@ jobs:
         run: |
           export JAVA_HOME="$JAVA_HOME_17_X64"
           export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+          sdkmanager="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)"
+          test -x "$sdkmanager"
           image='system-images;android-35;default;x86_64'
-          sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0' 'emulator' "$image"
+          "$sdkmanager" --install 'platforms;android-35' 'build-tools;35.0.0' 'emulator' "$image"
           pnpm android:build
           pnpm android:build --debug
           test -c /dev/kvm
           sudo chown "$(id -u):$(id -g)" /dev/kvm
           "$ANDROID_HOME/emulator/emulator" -accel-check
-          echo no | avdmanager create avd --force --name tsukiakari_ci --package "$image"
+          echo no | "$(dirname "$sdkmanager")/avdmanager" create avd --force --name tsukiakari_ci --package "$image"
           mkdir -p artifacts/android/device-check
           "$ANDROID_HOME/emulator/emulator" -avd tsukiakari_ci -port 5554 -accel on -no-window -no-audio \
             -no-snapshot -no-metrics -no-boot-anim -gpu swiftshader_indirect \

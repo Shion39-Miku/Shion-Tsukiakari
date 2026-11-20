@@ -22,7 +22,7 @@ const panels = Object.fromEntries(['chat', 'library', 'manage', 'accounts','sett
 let session, threads = [], activeThread, view = 'chat', section = 'music', source, updates;
 let textarea, sendButton, fileInput, attachButton, fileList, progress, composerStatus, mention, stopButton, composerDraft;
 let threadPage = null, threadLimit = 50, before = null, loadingOlder = false, threadListRequest, refreshListAgain = false;
-let routeVersion = 0, accountVersion = 0, refreshTimer, activeTimer, readTimer, scrollFrame, adminModule, adminOwner;
+let routeVersion = 0, accountVersion = 0, refreshTimer, activeTimer, readTimer, scrollFrame, adminModule, adminOwner, olderRequest;
 let connectionState = 'connecting', reconnectTimer, reconnectDelay = 1000, sessionRefresh, foregroundRequest, threadRefresh;
 let pendingThreadId, activeSendTicket;
 let messageFrame, readPending = false, catchingUp = false, newWhileReading = 0;
@@ -402,6 +402,7 @@ function markRead() {
   }, 250);
 }
 function resetTimeline() {
+  olderRequest?.abort(); olderRequest = null;
   messageNodes.clear(); messageOrder.length = 0; generating.clear();
   before = null; loadingOlder = false; readPending = false; catchingUp = false; newWhileReading = 0;
   cancelAnimationFrame(scrollFrame); scrollFrame = null;
@@ -500,9 +501,10 @@ function updateOlderButton() {
 async function loadOlder() {
   if (!before || loadingOlder || pendingThreadId || !activeThread) return;
   const id = activeThread.id, version = routeVersion;
+  const controller = olderRequest = new AbortController();
   loadingOlder = true; updateOlderButton();
   try {
-    const result = await request('/api/chat/threads/' + id + '?before=' + before);
+    const result = await request('/api/chat/threads/' + id + '?before=' + before, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]) });
     if (version !== routeVersion || id !== activeThread?.id) return;
     const oldHeight = conversation.scrollHeight;
     before = result.before;
@@ -510,9 +512,9 @@ async function loadOlder() {
     updateOlderButton();
     conversation.scrollTop += conversation.scrollHeight - oldHeight;
   } catch (error) {
-    if (version === routeVersion) toast(error.message, 'error');
+    if (version === routeVersion && !controller.signal.aborted) toast(error.message, 'error');
   } finally {
-    if (id === activeThread?.id) { loadingOlder = false; updateOlderButton(); }
+    if (olderRequest === controller) { olderRequest = null; loadingOlder = false; updateOlderButton(); }
   }
 }
 async function loadThread(id, { signal, version = routeVersion } = {}) {
@@ -977,6 +979,7 @@ async function navigate(next, options = {}) {
   if (view === 'chat' && previousThreadId) scrollPositions.set(previousThreadId, conversation.scrollTop);
   const version = ++routeVersion, isCurrent = () => Boolean(session && routeVersion === version);
   foregroundRequest?.abort(); foregroundRequest = null;
+  if (olderRequest) { olderRequest.abort(); olderRequest = null; loadingOlder = false; updateOlderButton(); }
   threadRefresh?.controller.abort(); threadRefresh = null; catchingUp = false;
   pendingThreadId = null;
   clearTimeout(readTimer);
