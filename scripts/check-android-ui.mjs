@@ -55,6 +55,7 @@ try {
   assert.equal(await page.locator('#composer').isVisible(), false);
   const widths = await page.locator('.conversation-filters button').evaluateAll(items => items.map(item => item.getBoundingClientRect().width));
   assert.ok(Math.min(...widths) > 65 && Math.max(...widths) - Math.min(...widths) < 2);
+  await page.screenshot({ path: join(output, 'phone-layout.png') });
   for (const kind of ['AI','群聊','全部','好友']) await pick(kind).click();
   await friend().click(); await page.getByText('我把新歌放进收藏了，有空一起听。').waitFor();
   const historyRequest = Promise.withResolvers(), lateResponse = Promise.withResolvers();
@@ -128,6 +129,8 @@ try {
   await page.locator('.thread-list').getByRole('button', { name: '月下茶话', exact: true }).click();
   await page.getByRole('button', { name: '查看群成员' }).click();
   await page.locator('#conversation-details').getByText('知遥 · 演示人格', { exact: true }).waitFor();
+  await page.locator('#app-boot').waitFor({ state: 'hidden' });
+  await page.screenshot({ path: join(output, 'tablet-layout.png') });
   await page.getByRole('button', { name: '关闭会话详情', exact: true }).click();
   const peer = await fixture.stars('/api/chat/threads/' + fixture.direct + '/messages', 'POST', { text: '一封月下的演示来信。' });
   assert.equal(peer.status, 201);
@@ -159,6 +162,20 @@ try {
   await page.getByRole('dialog', { name: '前往系统卸载', exact: true }).getByRole('button', { name: '取消', exact: true }).click();
   assert.equal(await page.evaluate(() => window.androidFixtureEvents.includes('uninstall')), false);
   pass('AstrBot 接口模拟流式回复、普通账号权限、设备设置、彩蛋、导出和取消卸载');
+
+  await nav.getByRole('button', { name: '聊天', exact: true }).click();
+  for (const width of [320, 390, 739, 740, 1000, 1130]) {
+    await page.setViewportSize({ width, height: 820 });
+    const layout = await page.evaluate(() => ({
+      outer: document.documentElement.scrollWidth,
+      inApp: document.querySelector('#app-shell').clientWidth,
+      side: document.querySelector('#app-sidebar').getBoundingClientRect().width,
+      chatVisible: getComputedStyle(document.querySelector('#conversation')).visibility === 'visible',
+    }));
+    assert.ok(layout.outer <= width && layout.inApp === width && layout.side > 0);
+    assert.equal(layout.chatVisible, width >= 740, 'Unexpected chat visibility at ' + width + ' pixels');
+  }
+  pass('320 到 1130 逻辑像素布局切换，临界宽度无横向溢出');
 
   const adminContext = await browser.newContext({ viewport: { width: 760, height: 950 }, userAgent: 'Chromium TsukiakariAndroid/0.1.0' });
   const admin = await account(adminContext, fixture.owner);

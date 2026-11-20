@@ -223,13 +223,23 @@ public final class MainActivity extends Activity {
                 return;
             }
             getSystemService(InputMethodManager.class).hideSoftInputFromWindow(address.getWindowToken(), 0);
-            if (!chosen.equals(origin)) {
-                stopService(new Intent(this, MessageService.class));
-                Notice.clear(this);
-                device.connectedTo(chosen); origin = chosen; account = "";
-                nextAccount = nextThread = null;
-            }
-            showChat();
+            apply.setEnabled(false); address.setEnabled(false);
+            status.setText("正在检查聊天服务…");
+            files.submit(() -> {
+                String issue = connectionIssue(chosen);
+                runOnUiThread(() -> {
+                    if (isFinishing() || !screen.isAttachedToWindow()) return;
+                    apply.setEnabled(true); address.setEnabled(true);
+                    if (issue != null) { status.setText(issue); return; }
+                    if (!chosen.equals(origin)) {
+                        stopService(new Intent(this, MessageService.class));
+                        Notice.clear(this);
+                        device.connectedTo(chosen); origin = chosen; account = "";
+                        nextAccount = nextThread = null;
+                    }
+                    showChat();
+                });
+            });
         });
         card.addView(apply, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)));
         if (origin != null) {
@@ -238,6 +248,19 @@ public final class MainActivity extends Activity {
         }
         surround.addView(card, fit); screen.addView(surround);
         root.removeAllViews(); root.addView(screen);
+    }
+
+    private static String connectionIssue(String chosen) {
+        try {
+            HttpURLConnection request = Endpoint.request(chosen, "/api/chat/session", false);
+            try {
+                int code = request.getResponseCode();
+                String mime = request.getContentType();
+                if ((code == 200 || code == 401) && mime != null && mime.startsWith("application/json")) return null;
+                if (code == 404 || code == 200 || code == 401) return "此地址没有月明かり聊天接口。请填写聊天服务的根地址。";
+            } finally { request.disconnect(); }
+        } catch (IOException unavailable) { /* Explain connection errors without exposing addresses or cookies. */ }
+        return "暂时连不上聊天服务，请检查地址、网络和 HTTPS 证书。";
     }
 
     private WebResourceResponse asset(WebResourceRequest request) {
