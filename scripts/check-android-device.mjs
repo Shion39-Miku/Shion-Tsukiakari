@@ -352,12 +352,14 @@ try {
   pass('系统字号设为 130% 后正文版面无横向溢出，切回手机宽度保留草稿');
 
   stage = 'account switch';
+  await page.getByRole('button', { name: '返回会话列表', exact: true }).click();
   await my().click();
   await page.getByRole('button', { name: '退出登录', exact: true }).click();
   await page.getByRole('dialog', { name: '退出登录' }).getByRole('button', { name: '退出登录', exact: true }).click();
   await page.getByRole('heading', { name: '登录月明かり' }).waitFor();
   await signIn(page, fixture.peer);
   await listing('星野 澄月 · 演示').waitFor();
+  await filter('全部').click();
   assert.equal(await listing('知遥的夜话').count(), 0);
   await listing('星野 澄月 · 演示').click();
   assert.equal(await composer().inputValue(), '');
