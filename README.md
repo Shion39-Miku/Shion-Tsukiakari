@@ -66,6 +66,8 @@
 
 [手机通讯录浮层](docs/images/android-contacts.png)
 
+[AOSP 启动器彩蛋菜单](docs/images/android-shortcut.png) · [暂别月光页面](docs/images/android-farewell.png)
+
 ## 使用与权限
 
 - 左侧功能栏进入聊天、月光庭院、个人设置；管理员另有「网站管理」「软件管理」。
