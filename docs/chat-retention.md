@@ -18,11 +18,15 @@
 
 ## 验证与部署
 
-隔离测试服务由 `scripts/android-fixture.mjs` 启动，Windows 开发端可通过 `TSUKIAKARI_CHAT_SERVER_URL` 指向同一演示入口。标准桌面共享模式使用 `pnpm package:desktop --shared-chat`，新版桌面也可通过 `--shared-chat` 启动。旧本地库可通过 `--local` 继续打开。
+隔离测试服务由 `scripts/android-fixture.mjs` 启动，Windows 开发端可通过 `TSUKIAKARI_CHAT_SERVER_URL` 指向同一演示入口。`pnpm package:desktop` 生成的 Windows 安装版和免安装版与 Android 发布包使用相同的公开 HTTPS 配置。需要查看旧本机资料时，Windows 上按 Alt 打开菜单，选择「月明かり → 查看本地聊天资料」。菜单可切回正式服务，命令行 `--local` 仍可使用。
 
 1. 从已有实例核对哪个聊天库持有正式账号、好友、群聊、消息与媒体。先制作一致性 SQLite 快照，在隔离路径试跑迁移和恢复。保留旧客户端数据目录与备份。分散在各设备的独立本地库需要先梳理来源；任意一个本地库都不能自动覆盖共享库。
-2. 将确认后的聊天库配置为独立 `DATABASE_PATH`。部署 `deploy/moonlit-chat.service` 和服务端配置 `deploy/chat.env.example`，其中网站入口、会话与 AstrBot 凭证由服务器运维保管。网站沿用独立数据库。迁移完成后，本机 `/api/chat/session` 应在匿名访问时返回 `401 login_required`。
-3. 通过现有站点代理配置加入聊天路由，先校验 Nginx，再重载。生产 HTTPS 验证同一账号的实时事件、附件、会话和通知。保留需同步的两端数据都来自此聊天库。
+2. 从核对过的备份运行 `pnpm db:restore` 到新路径，验证原账号 ID、密码校验数据、保留期内的消息和媒体。将它设置为独立 `DATABASE_PATH`。`deploy/moonlit-chat.service` 使用专用的 `chat-current` 发布链接，网站继续使用原目录和数据库。`deploy/chat.env.example` 中的实际 AstrBot 接入凭据和网站事件令牌由服务器运维保管。启动前确认 `moonlit` 可读写聊天库及其目录，确认网站库的实际路径不同。迁移完成后，回环 `/api/chat/session` 应在匿名访问时返回 `401 login_required`。
+3. 备份现有 HTTPS 虚拟主机和代理 include，将 `deploy/nginx-chat-locations.conf` 加入其现有配置。`/chat/assets/` 随聊天后端提供，站点原来的静态资源和代理继续走网站后端。先校验 Nginx，再重载。生产 HTTPS 验证首页、匿名 401、同一账号的实时事件、附件、会话和通知。通过浏览器或客户端检验聊天渲染也能加载全部模块。
 4. 启用 `moonlit-chat-backup.timer`。默认每天生成私有聊天数据库快照，验证成功后按 3 份和 3 天两个上限轮换。失败时保留最近可用的副本。备份副本清理已到期消息并移除旧会话，再校验媒体。网站和 Bot 备份由各服务单独管理，跨服务归档也采用受控的保存期限。
 
 恢复使用新 `DATABASE_PATH` 和 `pnpm db:restore <备份副本>`。脚本迁移并清理到期数据、撤销快照中的登录会话、检查完整性，再落到新的目标路径。检查后再切换服务指向。旧路径和备份原件保留。手工恢复或回退到旧快照后同样先走清理和验证流程，再开放流量。
+
+生产服务每次完成清理后在自己的 journal 中记录 `chat-retention complete`，包含截止时间与处理条数。使用专用验收账号重启连接并查看这一记录，可分别验证持久化和启动时清理。时间边界和批量删除在隔离副本验收。
+
+回退路由时先恢复原网站代理 include，确认 Nginx 配置通过后重载。再回退 `chat-current` 或停止新聊天服务与聊天备份定时器。保留切换后聊天库和快照。需要回退数据库时，先向新文件恢复和清理，再校验账号及媒体后切换，避免丢弃切换后写入的消息。

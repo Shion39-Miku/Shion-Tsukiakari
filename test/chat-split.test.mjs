@@ -10,6 +10,16 @@ test('independent website/chat databases, identities, event bridge and streaming
  const auth=await fetch(appBase+'/api/chat/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'owner',password})});assert.equal(auth.status,200);const value=await auth.json();assert.equal(value.websiteLinked,true);const cookie=auth.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');assert.match(cookie,/hoshifuru_admin_session=/);assert.match(cookie,/moonlit_session=/);
  async function req(path,method='GET',json,body){const r=await fetch(appBase+path,{method,headers:{Cookie:cookie,'X-CSRF-Token':value.csrf,'Idempotency-Key':randomUUID(),...(json===undefined?{}:{'Content-Type':'application/json'})},body:json===undefined?body:JSON.stringify(json)});return{status:r.status,value:await r.json()};}
  await t.test('website rejects chat routes; app and site permissions verify separate sessions',async()=>{assert.equal((await fetch(webBase+'/api/chat/session')).status,404);assert.equal((await req('/api/chat/session')).value.role,'admin');assert.equal((await req('/api/admin/session')).status,200);assert.equal((await req('/api/admin/settings')).status,200);});
+ const shell = await fetch(appBase + '/chat');
+ assert.equal(shell.status, 200);
+ const html = await shell.text();
+ assert.match(html, /src="\/chat\/assets\/chat\.js"/);
+ assert.match(html, /href="\/chat\/assets\/styles\.css"/);
+ for (const path of ['/chat/assets/chat.js', '/chat/assets/ui.js', '/chat/assets/chat.webmanifest']) {
+   assert.equal((await fetch(appBase + path)).status, 200);
+   assert.equal((await fetch(webBase + path)).status, 404);
+ }
+ assert.equal((await fetch(webBase + '/chat')).status, 404);
  let question;
  await t.test('website submissions stay in website DB and enter app private inbox once',async()=>{const r=await req('/api/public/questions','POST',{question:'独立后端的来信',anonymous:true});assert.equal(r.status,201);question=r.value.id;assert.equal((await req('/api/chat/notices/sync','POST')).value.created,1);assert.equal((await req('/api/chat/notices/sync','POST')).value.created,0);const web=openDatabase(webPath),chat=openDatabase(chatPath);assert.equal(web.prepare('SELECT count(*) n FROM questions').get().n,1);assert.equal(chat.prepare('SELECT count(*) n FROM questions').get().n,0);assert.equal(chat.prepare('SELECT count(*) n FROM chat_messages').get().n,1);web.close();chat.close();});
  await t.test('chat avatar/media stays private; explicit admin handoff copies validated bytes into site DB',async()=>{const pixels=await sharp({create:{width:24,height:24,channels:3,background:'#73517d'}}).png().toBuffer();const body=new FormData();body.set('kind','image');body.set('file',new Blob([pixels],{type:'image/png'}),'头像.png');const r=await req('/api/chat/files','POST',undefined,body);assert.equal(r.status,201);const id=r.value.item.id;const exported=await req('/api/chat/site/media-export','POST',{ids:[id]});assert.equal(exported.status,200,JSON.stringify(exported.value));const target=exported.value.items[id];const w=openDatabase(webPath),c=openDatabase(chatPath);try{assert.equal(w.prepare('SELECT sha256 FROM media WHERE id=?').get(target).sha256,c.prepare('SELECT sha256 FROM media WHERE id=?').get(id).sha256);assert.equal(w.prepare('SELECT 1 FROM media WHERE id=?').get(id),undefined);}finally{w.close();c.close();}});

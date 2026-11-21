@@ -23,6 +23,8 @@ const publicDir = resolve(root, 'public');
 const publicPages = new Set(['/', '/about', '/music', '/games', '/cats', '/questions']);
 const staticTypes = { js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', svg: 'image/svg+xml',
   webp: 'image/webp', png: 'image/png', jpeg: 'image/jpeg', jpg: 'image/jpeg',wav:'audio/wav', webmanifest: 'application/manifest+json; charset=utf-8' };
+const staticAsset = /^\/(?:[a-z][\w-]*\.(?:js|css)|assets\/(?:brand\/)?[a-z0-9][\w.-]*\.(?:svg|webp|png|jpe?g|wav)|chat\.webmanifest)$/i;
+const chatAssets = '/chat/assets';
 const mutable = (req) => req.method !== 'GET' && req.method !== 'HEAD';
 const uncacheable = 'no-store';
 
@@ -96,6 +98,12 @@ export async function createApplication(config) {
     readFile(resolve(publicDir, 'admin.html'), 'utf8'),
     readFile(resolve(publicDir, 'chat.html'), 'utf8'),
   ]);
+  // Serve the chat renderer and its relative imports from the same revision,
+  // even when the website and chat processes are deployed independently.
+  const chatShell = config.serviceMode === 'chat'
+    ? chatTemplate.replace(/\b(src|href)="(\/[^"\s]+)"/g, (attribute, name, path) =>
+      staticAsset.test(path) ? `${name}="${chatAssets}${path}"` : attribute)
+    : chatTemplate;
   const db = openDatabase(config.dbPath);
   if (!config.disableChat) db.exec('PRAGMA secure_delete = ON');
   const lookupLocation = locationLookup(db, config);
@@ -217,13 +225,16 @@ export async function createApplication(config) {
         return json(res, result, 200, cookie ? { 'Set-Cookie': cookie } : {});
       }
       if (!mutable(req)) {
-        if (path === '/app' || path === '/app/') { res.writeHead(302, { Location: '/chat', 'Cache-Control': 'no-store' }).end(); return; }
-        if (['/chat', '/chat/', '/chat/manage'].includes(path)) {
-          const page = renderShell(chatTemplate, { site: getSite(db, config), background: background(db) }, path);
+        if (!config.disableChat && (path === '/app' || path === '/app/')) { res.writeHead(302, { Location: '/chat', 'Cache-Control': 'no-store' }).end(); return; }
+        if (!config.disableChat && ['/chat', '/chat/', '/chat/manage'].includes(path)) {
+          const page = renderShell(chatShell, { site: getSite(db, config), background: background(db) }, path);
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': uncacheable });
           res.end(method === 'HEAD' ? undefined : page); return;
         }
-        if (path === '/chat.webmanifest') return await staticFile(req, res, path);
+        if (config.serviceMode === 'chat' && path.startsWith(chatAssets + '/')) {
+          const asset = path.slice(chatAssets.length);
+          if (staticAsset.test(asset)) return await staticFile(req, res, asset);
+        }
         const media = /^\/(?:chat-media|media)\/([^/]+)(?:\/(thumb)|\/preview\/(\d+))?$/.exec(path);
         if (media) {
           const id = assertId(media[1]);
@@ -253,9 +264,7 @@ export async function createApplication(config) {
           }
           return await sendMedia(db, req, res, id, media[3] ? Number(media[3]) : Boolean(media[2]));
         }
-        if (/^\/(?:[a-z][\w-]*\.(?:js|css)|assets\/(?:brand\/)?[a-z0-9][\w.-]*\.(?:svg|webp|png|jpe?g|wav))$/i.test(path)) {
-          return await staticFile(req, res, path);
-        }
+        if (staticAsset.test(path)) return await staticFile(req, res, path);
         if (publicPages.has(path) || path === '/admin' || path === '/admin/login') {
           const isAdmin = path.startsWith('/admin');
           const page = renderShell(isAdmin ? admin : front, {

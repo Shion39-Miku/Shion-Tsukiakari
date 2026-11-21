@@ -64,9 +64,15 @@ export function createChat(db, config, json) {
     if (row) emit(owner, thread, 'message', { item: message(row) });
   };
   ai=createChatAI(db,config,{social,own,emit,publish:publishMessage,message,cutoff});
-  const stopPruning = scheduleChatPrune(db, { clock: config.chatClock, interval: config.chatPruneInterval, onPruned() {
-    for (const key of new Set([...connections].map(stream => stream.owner))) emit(key, null, 'threads', { reason: 'retention' });
-  } });
+  const stopPruning = scheduleChatPrune(db, {
+    clock: config.chatClock, interval: config.chatPruneInterval,
+    onComplete: config.reportChatPrune ? ({ cutoff, messages, files }) => {
+      console.log(`chat-retention complete cutoff=${cutoff} messages=${messages} files=${files}`);
+    } : undefined,
+    onPruned() {
+      for (const key of new Set([...connections].map(stream => stream.owner))) emit(key, null, 'threads', { reason: 'retention' });
+    },
+  });
   function checkSendExpiry(threadId, storageKey) {
     check(!db.prepare('SELECT 1 FROM chat_expired_sends WHERE key_hash=?').get(expiredSendHash(threadId, storageKey)) &&
       !db.prepare("SELECT 1 FROM chat_messages WHERE thread_id=? AND request_key=? AND role='user' AND created_at<=?").get(threadId, storageKey, cutoff()),

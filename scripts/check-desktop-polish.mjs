@@ -188,7 +188,7 @@ async function checkMenuPrompts({ app, page, member, native, report }) {
 
 export async function checkStartupPrompt({ launch, environment, out, report }) {
   const data = await mkdtemp(join(out, 'startup-error-'));
-  const app = await launch({ ...environment, TSUKIAKARI_DESKTOP_DATA: data, TSUKIAKARI_CHAT_SERVER_URL: 'http://example.invalid/' });
+  const app = await launch({ ...environment, TSUKIAKARI_DESKTOP_DATA: data, TSUKIAKARI_CHAT_SERVER_URL: 'http://example.invalid/' }, { local: false });
   try {
     const page = await app.firstWindow();
     const dialog = page.getByRole('dialog', { name: '月明かり未能启动', exact: true });

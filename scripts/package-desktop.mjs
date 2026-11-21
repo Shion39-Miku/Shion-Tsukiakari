@@ -6,7 +6,7 @@ import { prepareDesktop } from './prepare-desktop.mjs';
 import { root, sha256 } from '../server/core.mjs';
 const portableOnly = process.argv.includes('--portable-only');
 const previous = portableOnly ? JSON.parse(await readFile(join(root, 'artifacts/desktop-app.json'), 'utf8')) : null;
-const prepared = portableOnly ? { desktop: join(root, 'desktop'), output: join(root, 'desktop/.generated'), report: previous.preparation } : await prepareDesktop({ sharedChat: process.argv.includes('--shared-chat') });
+const prepared = portableOnly ? { desktop: join(root, 'desktop'), output: join(root, 'desktop/.generated'), report: previous.preparation } : await prepareDesktop({ sharedChat: true });
 const { desktop, output, report: preparation } = prepared;
 const require = createRequire(join(desktop, 'package.json'));
 const { build, Platform, Arch } = require('electron-builder');

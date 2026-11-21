@@ -20,13 +20,15 @@ const windowPreload = join(__dirname, '.generated', 'window-preload.cjs');
 const splashPath = join(__dirname, 'splash.html'), settingsPath = join(__dirname, 'settings.html');
 const backendDir = join(resources, 'backend'), databasePath = join(dataDir, 'data', 'chat.sqlite');
 const configPath = join(dataDir, 'desktop-settings.json'), secretPath = join(dataDir, 'model-credentials.json');
-let win, settingsWin, settingsOwner, child, origin, quitting = false, ready = false, pendingRelaunch = false;
+let win, settingsWin, settingsOwner, child, origin, quitting = false, ready = false, pendingRelaunch;
 let accessToken, accountWindowNumber = 0;
 let desktopFeatures, prompts;
 const state = global.__hoshifuruDesktop = { dataDir, databasePath, backendPid: null, origin: null, ready: false, packaged: app.isPackaged };
 
 function readJson(path, fallback = {}) { try { return JSON.parse(fs.readFileSync(path, 'utf8').replace(/^\uFEFF/, '')); } catch { return fallback; } }
 let preferences = readJson(configPath);
+const chatRelease = readJson(join(resources, 'chat-public.json'));
+const localMode = process.argv.includes('--local');
 function writeJson(path, value) {
   const temporary = path + '.tmp';
   fs.writeFileSync(temporary, JSON.stringify(value, null, 2), { mode: 0o600 }); fs.renameSync(temporary, path);
@@ -49,8 +51,8 @@ function savedModel() {
   const path = process.env.TSUKIAKARI_MODEL_FILE||process.env.HOSHIFURU_DESKTOP_MODEL_FILE || reference.file || (dataDir.endsWith('HoshifuruYoruNi')?join(app.getPath('home'),'.codex','secrets','hoshifuru-ai.json'):null);
   return path ? readJson(path) : {};
 }
-function relaunch() {
-  pendingRelaunch = true;
+function relaunch(useLocal = localMode) {
+  pendingRelaunch = [...(app.isPackaged ? [] : [app.getAppPath()]), ...(useLocal ? ['--local'] : [])];
   desktopFeatures.requestExit();
 }
 const allowedPrompt = url => trustedDocument(url, splashPath) || trustedDocument(url, settingsPath)
@@ -86,9 +88,8 @@ function seedDatabase() {
   fs.mkdirSync(dirname(databasePath), { recursive: true });
 }
 async function startBackend() {
-  const release = readJson(join(resources, 'chat-public.json'));
-  const remoteServer = !process.argv.includes('--local') && (process.env.TSUKIAKARI_CHAT_SERVER_URL || process.env.HOSHIFURU_CHAT_SERVER_URL ||
-    (release.sharedChat || process.argv.includes('--shared-chat') ? release.origin : null));
+  const remoteServer = !localMode && (process.env.TSUKIAKARI_CHAT_SERVER_URL || process.env.HOSHIFURU_CHAT_SERVER_URL ||
+    (chatRelease.sharedChat || process.argv.includes('--shared-chat') ? chatRelease.origin : null));
   if (remoteServer) {
     const url = new URL(remoteServer);
     const localDevelopment = !app.isPackaged && url.protocol === 'http:' && url.hostname === '127.0.0.1';
@@ -229,8 +230,13 @@ ipcMain.handle('hoshifuru:model:save', async (event, value) => {
   } catch (error) { return { error: error.message }; }
 });
 function setMenu() {
+  const localOptions = chatRelease.sharedChat ? [{
+    label: localMode ? '连接正式聊天服务' : '查看本地聊天资料',
+    click: () => relaunch(!localMode),
+  }] : [];
   const template = [
     { label: '月明かり', submenu: [ { label: '新建登录窗口', accelerator: 'CmdOrCtrl+Shift+N', click: () => newAccountWindow().catch((error) => log(error.message)) }, { label: '备用模型连接设置…', click: () => showSettings().catch((error) => log(error.message)) }, { type: 'separator' }, { label: '打开数据文件夹', click: () => adminNativeAction(() => shell.openPath(dataDir)).catch((error) => log(error.message)) },
+      ...localOptions,
       { label: '关于月明かり', click: () => explain(BrowserWindow.getFocusedWindow() || win, '关于月明かり', 'Tsukiakari ' + app.getVersion(), '本地数据目录\n' + dataDir) }, { type: 'separator' }, { label: '退出', accelerator: 'CmdOrCtrl+Q', click: () => desktopFeatures.requestExit() } ] },
     { label: '编辑', submenu: [{ role: 'undo', label: '撤销' }, { role: 'redo', label: '重做' }, { type: 'separator' }, { role: 'cut', label: '剪切' }, { role: 'copy', label: '复制' }, { role: 'paste', label: '粘贴' }, { role: 'selectAll', label: '全选' }] },
     { label: '视图', submenu: [{ role: 'resetZoom', label: '实际大小' }, { role: 'zoomIn', label: '放大界面' }, { role: 'zoomOut', label: '缩小界面' }, { type: 'separator' }, { role: 'togglefullscreen', label: '全屏' }, { role: 'minimize', label: '最小化' }] },
@@ -240,7 +246,7 @@ async function main() {
   await app.whenReady(); nativeTheme.themeSource = 'dark';
   prompts = createWindowPrompts(require('electron'), allowedPrompt);
   desktopFeatures=createDesktopFeatures(require('electron'),{preferences,save:()=>writeJson(configPath,preferences),origin:()=>origin,authorize:verifiedAccount,iconPath:join(__dirname,'icon.png'),trayPath:join(__dirname,'tray.png'),
-    ask: prompts.ask, checkUnfinished: prompts.checkUnfinished, log, onCancelQuit: () => { pendingRelaunch = false; } });
+    ask: prompts.ask, checkUnfinished: prompts.checkUnfinished, log, onCancelQuit: () => { pendingRelaunch = undefined; } });
   state.features=()=>desktopFeatures.diagnostics();
   const bounds = preferences.window || {};
   win = new BrowserWindow({ width: Math.max(880, Math.min(2560, bounds.width || 1320)), height: Math.max(600, Math.min(1600, bounds.height || 900)), minWidth: 800, minHeight: 580,
@@ -268,7 +274,7 @@ else {
     try { writeJson(configPath, preferences); } catch (error) { log(error.message); }
     if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
       desktopFeatures?.close();
-      if (pendingRelaunch) app.relaunch({ execPath: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, args: [] });
+      if (pendingRelaunch) app.relaunch({ execPath: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, args: pendingRelaunch });
       return;
     }
     event.preventDefault(); if (quitting) return; quitting = true;

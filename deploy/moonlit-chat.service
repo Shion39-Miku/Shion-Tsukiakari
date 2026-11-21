@@ -6,7 +6,7 @@ After=network.target moonlit.service
 Type=simple
 User=moonlit
 Group=moonlit
-WorkingDirectory=/www/wwwroot/shion.wiki/current
+WorkingDirectory=/www/wwwroot/shion.wiki/chat-current
 EnvironmentFile=/etc/moonlit/chat.env
 Environment=UPLOAD_TEMP_DIR=/run/moonlit-chat
 ExecStart=/opt/moonlit-node/bin/node --disable-warning=ExperimentalWarning server/chat-index.mjs

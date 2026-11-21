@@ -67,14 +67,17 @@ export async function pruneChat(db, { clock, keepRunning = () => true } = {}) {
   return { cutoff, messages, files };
 }
 
-export function scheduleChatPrune(db, { clock, onPruned, interval = 15 * 60_000 } = {}) {
+export function scheduleChatPrune(db, { clock, onPruned, onComplete, interval = 15 * 60_000 } = {}) {
   let stopped = false, running = false;
   const run = async () => {
     if (running || stopped) return;
     running = true;
     try {
       const result = await pruneChat(db, { clock, keepRunning: () => !stopped });
-      if (!stopped && result.messages) onPruned?.();
+      if (!stopped) {
+        onComplete?.(result);
+        if (result.messages) onPruned?.();
+      }
     }
     catch { console.error('聊天记录清理未完成，将在下一轮重试。'); }
     finally { running = false; }

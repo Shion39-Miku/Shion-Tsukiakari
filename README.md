@@ -6,9 +6,9 @@
 
 **0.4.2** 放大聊天文字，修复会话分类与通讯录切换时的闪烁。通讯录和关闭提示使用应用内浮窗。见[版本说明](docs/maintenance-0.4.2.md)。
 
-**0.4.4 预发布**统一提供 Android、Windows 安装包和校验文件。安卓打开后直接登录，同一账号的会话、聊天和已读状态由共享后端同步。服务器保留最近30天聊天记录。 [发布说明](docs/release-0.4.4.md) · [安卓指南](docs/android.md)
+**0.4.5 预发布**统一提供 Android、Windows 安装包和校验文件。安卓打开后直接登录，同一账号的会话、聊天和已读状态由共享后端同步。服务器保留最近30天聊天记录。 [发布说明](docs/release-0.4.5.md) · [安卓指南](docs/android.md)
 
-[下载 Android APK](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.4/Tsukiakari-0.4.4-Android.apk) · [Windows 安装版](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.4/Tsukiakari-0.4.4-Setup.exe) · [Windows 免安装版](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.4/Tsukiakari-0.4.4-Portable.exe) · [SHA-256 校验](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.4/SHA256SUMS.txt)
+[下载 Android APK](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.5/Tsukiakari-0.4.5-Android.apk) · [Windows 安装版](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.5/Tsukiakari-0.4.5-Setup.exe) · [Windows 免安装版](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.5/Tsukiakari-0.4.5-Portable.exe) · [SHA-256 校验](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.5/SHA256SUMS.txt)
 
 ## 功能
 
@@ -21,7 +21,7 @@
 
 ## 安装与首次启动
 
-0.4.4 的安装包名为 `Tsukiakari-0.4.4-Setup.exe`，免安装版为 `Tsukiakari-0.4.4-Portable.exe`。程序文件为 `Tsukiakari.exe`，界面、快捷方式、托盘和通知显示「月明かり」。Windows 附件为 x64 测试构建，尚无 Authenticode 签名。 [全部发行附件](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/tag/v0.4.4)
+0.4.5 的安装包名为 `Tsukiakari-0.4.5-Setup.exe`，免安装版为 `Tsukiakari-0.4.5-Portable.exe`。程序文件为 `Tsukiakari.exe`，界面、快捷方式、托盘和通知显示「月明かり」。Windows 附件为 x64 测试构建，尚无 Authenticode 签名。 [全部发行附件](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/tag/v0.4.5)
 
 从源码构建时，Windows 构建清单写入 `artifacts/desktop-app.json`。
 
@@ -32,7 +32,7 @@
 
 旧版升级沿用原账号和完整数据目录。安装器保留升级标识；发现旧 `HoshifuruYoruNi` 或旧便携数据目录时直接复用，避免只迁移数据库而丢失登录态和缓存。详见[数据与升级](docs/architecture.md#数据与升级)。
 
-安卓需要 Android 9 或更新版本及可更新的 Android System WebView。打开后输入共享聊天账号和密码。桌面共享模式使用同一发布配置，桌面本地模式可继续访问原本地资料。 [安卓联调](docs/android.md#开发与测试) · [共享后端和保留策略](docs/chat-retention.md)
+安卓需要 Android 9 或更新版本及可更新的 Android System WebView。Windows 与 Android 发行包打开后直接输入同一聊天账号和密码。需要查看旧本机资料时，Windows 可按 Alt 打开菜单，再选择「月明かり → 查看本地聊天资料」。 [安卓联调](docs/android.md#开发与测试) · [共享后端和保留策略](docs/chat-retention.md)
 
 ## 界面预览
 

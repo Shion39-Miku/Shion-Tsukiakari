@@ -26,7 +26,7 @@ let child, browser, page, origin, threadId;
 const report = { at: new Date().toISOString(), executable: release.files.find((f) => f.path.endsWith('Portable.exe')).path, checks: [], errors: [] };
 const passed = (value) => { report.checks.push(value); console.log('通过：' + value); };
 async function launch() {
-  child = spawn(executable, ['--remote-debugging-port=' + debugPort], { env: environment, windowsHide: false, stdio: 'ignore' });
+  child = spawn(executable, ['--local', '--remote-debugging-port=' + debugPort], { env: environment, windowsHide: false, stdio: 'ignore' });
   child.on('error', (error) => report.errors.push(error.message));
   for (let i = 0; i < 180; i++) {
     if (child.exitCode !== null) throw new Error('免安装启动器提前退出：' + child.exitCode);
@@ -57,7 +57,7 @@ try {
   const music = (await api('/api/public/music')).body.items; const detail = (await api('/api/public/music/' + music[0].id)).body.item;
   const range = await page.evaluate(async (url) => { const r = await fetch(url, { headers: { Range: 'bytes=0-1023' } }); return { status: r.status, bytes: (await r.arrayBuffer()).byteLength }; }, detail.audio.url); assert.deepEqual(range, { status: 206, bytes: 1024 });
   passed('包内后端与数据库直接读取歌曲、歌词和206音频分段，未配置模型时仍可查询与管理');
-  const duplicate = spawn(executable, [], { env: environment, windowsHide: false, stdio: 'ignore' });
+  const duplicate = spawn(executable, ['--local'], { env: environment, windowsHide: false, stdio: 'ignore' });
   for (let i = 0; i < 180 && duplicate.exitCode === null; i++) await new Promise((done) => setTimeout(done, 250));
   assert.equal(duplicate.exitCode, 0); assert.equal((await api('/api/public/health')).status, 200);
   const css = await page.evaluate(async () => (await fetch('/desktop.css')).status); assert.equal(css, 200);

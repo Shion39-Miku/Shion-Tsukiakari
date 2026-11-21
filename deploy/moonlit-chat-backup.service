@@ -6,7 +6,7 @@ After=moonlit-chat.service
 Type=oneshot
 User=moonlit
 Group=moonlit
-WorkingDirectory=/www/wwwroot/shion.wiki/current
+WorkingDirectory=/www/wwwroot/shion.wiki/chat-current
 EnvironmentFile=/etc/moonlit/chat.env
 Environment=BACKUP_DIR=/var/lib/moonlit-chat-backups
 Environment=BACKUP_KEEP_COUNT=3

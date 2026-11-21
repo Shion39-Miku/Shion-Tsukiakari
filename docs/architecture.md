@@ -35,7 +35,7 @@
 | TSUKIAKARI_DESKTOP_DATA | 桌面数据目录 |
 | TSUKIAKARI_ASTRBOT_FILE | 桌面读取的私有AstrBot配置引用 |
 | TSUKIAKARI_MODEL_FILE | 兼容旧独立模型模式的私有配置 |
-| TSUKIAKARI_CHAT_SERVER_URL | 只连接已有HTTPS软件后端；默认本地 |
+| TSUKIAKARI_CHAT_SERVER_URL | 开发联调时覆盖桌面聊天源地址。标准发行包默认读取公开部署配置 |
 | PUBLIC_BASE_URL / COOKIE_SECURE | 独立部署时的正式地址与安全Cookie |
 | TRUSTED_PROXIES | 仅填写实际可信代理IP/CIDR |
 

@@ -99,8 +99,8 @@ export function checkInstaller(file, { scan, protectedPath }) {
     }
     const chat = JSON.parse(readFileSync(join(resources, 'chat-public.json'), 'utf8'));
     const publicChat = JSON.parse(readFileSync(join(root, 'deploy/chat-public.json'), 'utf8'));
-    if (Object.keys(chat).length !== 2 || chat.origin !== publicChat.origin || typeof chat.sharedChat !== 'boolean') {
-      throw new SecurityError('桌面包的公开聊天连接配置未经审核。');
+    if (Object.keys(chat).length !== 2 || chat.origin !== publicChat.origin || chat.sharedChat !== true) {
+      throw new SecurityError('桌面发布包须默认连接已审核的公开聊天服务。');
     }
     inspectAsar(join(resources, 'app.asar'), join(scratch, 'asar'), scan, protectedPath);
     scan(['dir', resources, '--max-target-megabytes=32']);
