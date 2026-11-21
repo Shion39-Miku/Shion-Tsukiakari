@@ -44,10 +44,15 @@ async function nodes() {
   return [...xml.matchAll(/<node\b[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*>/g)];
 }
 
+function center(node) {
+  const [, left, top, right, bottom] = node.map(Number);
+  return [String(Math.round((left + right) / 2)), String(Math.round((top + bottom) / 2))];
+}
+
 async function tapNode(label) {
   const row = await until(async () => (await nodes()).find(node => ['text','content-desc','resource-id'].some(key => node[0].includes(key + '="' + label + '"'))),
     'Android control unavailable: ' + label);
-  await shell('input', 'tap', String(Math.round((Number(row[1]) + Number(row[3])) / 2)), String(Math.round((Number(row[2]) + Number(row[4])) / 2)));
+  await shell('input', 'tap', ...center(row));
 }
 
 async function fillOrigin(address) {
@@ -82,6 +87,8 @@ const fixture = await androidFixture(folder);
 const port = new URL(fixture.origin).port;
 let device;
 let page;
+let originalFontScale;
+let secureHidden = false;
 async function webview() {
   device = (await android.devices()).find(candidate => candidate.serial() === serial);
   assert.ok(device, 'Playwright cannot see the emulator via ADB.');
@@ -216,7 +223,10 @@ try {
   assert.match(await shell('dumpsys', 'shortcut'), /id=farewell/);
   await shell('am', 'start', '-a', 'android.intent.action.VIEW', '-d', 'tsukiakari://farewell', '-n', qa + '/' + component);
   await page.getByRole('heading', { name: '先别道晚安…', exact: true }).waitFor();
-  await page.waitForFunction(() => document.querySelector('.farewell-panel img')?.naturalWidth > 0);
+  await page.getByRole('img', { name: '月下的詩音与知遥' }).evaluate(async art => {
+    await art.decode();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
   await snap('android-farewell');
   await page.getByRole('button', { name: '卸载应用' }).click();
   await page.getByRole('dialog', { name: '前往系统卸载', exact: true }).getByRole('button', { name: '前往系统' }).click();
@@ -250,6 +260,47 @@ try {
   pass('系统回收后保留登录、上次会话与草稿');
   const memory = await shell('dumpsys', 'meminfo', qa);
   report.totalPssKb = Number(memory.match(/TOTAL PSS:\s+(\d+)/)?.[1] || 0);
+
+  stage = 'system font size and return to phone width';
+  originalFontScale = (await shell('settings', 'get', 'system', 'font_scale')).trim();
+  const heading = page.getByRole('heading', { name: '晚灯 · 演示', exact: true });
+  const headingWidth = () => heading.evaluate(element => {
+    const text = document.createRange();
+    text.selectNodeContents(element);
+    return text.getBoundingClientRect().width;
+  });
+  const originalHeading = await headingWidth();
+  await shell('settings', 'put', 'system', 'font_scale', '1.3');
+  await until(async () => (await headingWidth()) > originalHeading * 1.1, 'System font size did not enlarge the chat heading');
+  await shell('wm', 'size', '900x1810');
+  await shell('wm', 'density', '365');
+  await page.waitForFunction(() => innerWidth < 550);
+  assert.equal(await composer().inputValue(), '系统重开后仍在的演示草稿。');
+  assert.equal(await page.getByRole('button', { name: '发送消息', exact: true }).isVisible(), true);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+  pass('系统字号设为 130% 后正文版面无横向溢出，切回手机宽度保留草稿');
+
+  stage = 'launcher long-press menu';
+  await shell('pm', 'disable-user', '--user', '0', secure);
+  secureHidden = true;
+  await press(3);
+  await press(284);
+  const launcherIcon = async () => (await nodes()).find(node => /package="[^\"]*launcher[^\"]*"/.test(node[0])
+    && /(?:text|content-desc)="月明かり"/.test(node[0]));
+  let appIcon = await until(launcherIcon, 'The All Apps key did not open the app drawer', 7000).catch(() => null);
+  if (!appIcon) {
+    await press(3);
+    await shell('input', 'swipe', '450', '1600', '450', '550', '500');
+    appIcon = await until(launcherIcon, 'App icon not found in the launcher');
+  }
+  const position = center(appIcon);
+  await shell('input', 'swipe', ...position, ...position, '850');
+  const shortcut = await until(async () => (await nodes()).find(node => node[0].includes('先别道晚安') || node[0].includes('月光还在，要再坐一会儿吗')),
+    'The launcher did not show the farewell shortcut');
+  await snap('android-shortcut');
+  await shell('input', 'tap', ...center(shortcut));
+  await page.getByRole('heading', { name: '先别道晚安…', exact: true }).waitFor();
+  pass('长按 AOSP 启动器的应用图标显示彩蛋快捷项，点按可打开彩蛋页');
 } catch (error) {
   report.failedStage = stage;
   const visible = (await nodes().catch(() => [])).map(node => node[0]);
@@ -270,6 +321,9 @@ try {
 } finally {
   await device?.close().catch(() => {});
   await fixture.close();
+  if (secureHidden) await shell('pm', 'enable', secure).catch(() => {});
+  if (/^\d+(?:\.\d+)?$/.test(originalFontScale)) await shell('settings', 'put', 'system', 'font_scale', originalFontScale).catch(() => {});
+  else if (originalFontScale === 'null') await shell('settings', 'delete', 'system', 'font_scale').catch(() => {});
   for (const args of [['wm','size','reset'], ['wm','density','reset']]) await shell(...args).catch(() => {});
   await adb(['reverse','--remove','tcp:' + port]).catch(() => {});
   await writeFile(join(folder, 'report.json'), JSON.stringify(report, null, 2));
