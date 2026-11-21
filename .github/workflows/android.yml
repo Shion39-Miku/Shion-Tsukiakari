@@ -1,0 +1,128 @@
+name: Android build and device acceptance
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        default: ''
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1 # v3
+        with:
+          version: '11.25.0'
+          runtime: 'node@24.22.3'
+          install: false
+      - run: pnpm security:setup --ci
+      - run: pnpm security:check history
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir desktop install --frozen-lockfile
+      - run: node desktop/node_modules/electron/install.js
+      - name: Retrieve locally signed APK from the draft
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          version=$(node --input-type=module -e 'import { androidConfig } from "./scripts/android-release-config.mjs"; console.log(androidConfig.version)')
+          test "$RELEASE_TAG" = "v$version"
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse "${GITHUB_REF}^{commit}")" = "$(git rev-parse HEAD)"
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '.isDraft and .isPrerelease')" = true
+          file="Tsukiakari-$version-Android.apk"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "artifacts/android/$version" \
+            --pattern "$file" --pattern "$file.sha256" --pattern android-build.json
+      - name: Build and audit Android packages
+        id: packages
+        shell: bash
+        env:
+          APK_KIND: ${{ inputs.release_tag == '' && 'ci' || 'release' }}
+        run: |
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+          sdkmanager="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)"
+          test -x "$sdkmanager"
+          "$sdkmanager" --install 'platforms;android-35' 'build-tools;35.0.0' 'emulator' 'system-images;android-35;default;x86_64'
+          if [ "$APK_KIND" = ci ]; then pnpm android:build --ci; fi
+          pnpm android:build --debug
+          pnpm security:check android "$APK_KIND" qa
+          node --input-type=module - "$APK_KIND" >> "$GITHUB_OUTPUT" <<'NODE'
+          import { androidVariant } from './scripts/android-release-config.mjs';
+          const standard = androidVariant(process.argv[2]);
+          const qa = androidVariant('qa');
+          console.log(`apk=${standard.folder}/${standard.file}`);
+          console.log(`checksum=${standard.folder}/${standard.file}.sha256`);
+          console.log(`manifest=${standard.folder}/android-build.json`);
+          console.log(`qa=${qa.folder}/${qa.file}`);
+          NODE
+      - name: Install and test both packages on Android 15
+        id: device
+        shell: bash
+        env:
+          HTTPS_APK: ${{ steps.packages.outputs.apk }}
+          QA_APK: ${{ steps.packages.outputs.qa }}
+        run: |
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+          export ANDROID_USER_HOME="$RUNNER_TEMP/tsukiakari-android"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          sdkmanager="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)"
+          test -c /dev/kvm
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          "$ANDROID_HOME/emulator/emulator" -accel-check
+          avd="$ANDROID_AVD_HOME/tsukiakari_ci.avd"
+          echo no | "$(dirname "$sdkmanager")/avdmanager" create avd --force --name tsukiakari_ci --package 'system-images;android-35;default;x86_64' \
+            --device pixel_2 --path "$avd"
+          test -f "$avd/config.ini"
+          if [ ! -f "$ANDROID_AVD_HOME/tsukiakari_ci.ini" ]; then
+            printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-35\n' "$avd" > "$ANDROID_AVD_HOME/tsukiakari_ci.ini"
+          fi
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fx tsukiakari_ci
+          mkdir -p artifacts/android/device-check
+          adb start-server
+          "$ANDROID_HOME/emulator/emulator" -avd tsukiakari_ci -port 5554 -no-window -no-audio \
+            -no-snapshot -no-metrics -no-boot-anim -gpu swiftshader -feature -Vulkan \
+            -memory 2048 -cores 2 -partition-size 3072 </dev/null > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          emulator_pid=$!
+          trap 'adb -s emulator-5554 emu kill >/dev/null 2>&1 || true' EXIT
+          booted=0
+          for ((attempt=0; attempt<115; attempt++)); do
+            kill -0 "$emulator_pid"
+            if [ "$(timeout 5 adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d "\r" || true)" = 1 ]; then
+              booted=1
+              break
+            fi
+            sleep 2
+          done
+          test "$booted" = 1
+          TSUKIAKARI_QA_ELECTRON=1 xvfb-run -a pnpm check:android:device "$HTTPS_APK" "$QA_APK"
+      - name: Audit public test evidence
+        id: evidence
+        if: ${{ !cancelled() && (steps.device.outcome == 'success' || steps.device.outcome == 'failure') }}
+        run: pnpm security:check android-evidence
+      - name: Upload installable Android APK and checksums
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ inputs.release_tag == '' && 'Tsukiakari-Android-CI' || 'Tsukiakari-Android' }}
+          path: |
+            ${{ steps.packages.outputs.apk }}
+            ${{ steps.packages.outputs.checksum }}
+            ${{ steps.packages.outputs.manifest }}
+          if-no-files-found: error
+      - name: Upload isolated Android acceptance evidence
+        if: ${{ !cancelled() && steps.evidence.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: Tsukiakari-Android-QA
+          path: |
+            artifacts/android/device-check/report.json
+            artifacts/android/device-check/screens/*.png
+          if-no-files-found: error

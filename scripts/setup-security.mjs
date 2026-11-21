@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { root, SecurityError, fileDigest, scannerArchive, scannerArchiveSha256, scannerPath, scannerVersion, toolsDir, verifiedScanner } from './security-tools.mjs';
+import { root, SecurityError, fileDigest, scannerArchive, scannerArchiveSha256, scannerExecutable, scannerPath, scannerVersion, supportsScanner, toolsDir, verifiedScanner } from './security-tools.mjs';
 
 const args = process.argv.slice(2);
 const archiveOption = args.indexOf('--archive');
@@ -17,17 +17,18 @@ async function installScanner() {
   const cache = realpathSync(toolsDir);
   const scratch = mkdtempSync(join(cache, 'download-'));
   try {
-    const zip = archive ? resolve(archive) : join(scratch, scannerArchive);
+    const bundle = archive ? resolve(archive) : join(scratch, scannerArchive);
     if (!archive) {
       const response = await fetch(`https://github.com/gitleaks/gitleaks/releases/download/v${scannerVersion}/${scannerArchive}`,
         { signal: AbortSignal.timeout(360_000) });
       if (!response.ok) throw new SecurityError('无法下载已固定版本的 Gitleaks。可使用 --archive 安装已下载的官方压缩包。');
-      writeFileSync(zip, Buffer.from(await response.arrayBuffer()));
+      writeFileSync(bundle, Buffer.from(await response.arrayBuffer()));
     }
-    if (await fileDigest(zip) !== scannerArchiveSha256) throw new SecurityError('Gitleaks 压缩包的 SHA-256 校验失败。');
-    const unpack = spawnSync('tar', ['-xf', zip, '-C', scratch, 'gitleaks.exe'], { windowsHide: true, stdio: 'ignore' });
-    if (unpack.status !== 0) throw new SecurityError('无法解压 Gitleaks。需要 Windows 自带的 tar。');
-    copyFileSync(verifiedScanner(join(scratch, 'gitleaks.exe')), scannerPath);
+    if (await fileDigest(bundle) !== scannerArchiveSha256) throw new SecurityError('Gitleaks 压缩包的 SHA-256 校验失败。');
+    const unpack = spawnSync('tar', ['-xf', bundle, '-C', scratch, scannerExecutable], { windowsHide: true, stdio: 'ignore' });
+    if (unpack.status !== 0) throw new SecurityError('无法用 tar 解压 Gitleaks。');
+    copyFileSync(verifiedScanner(join(scratch, scannerExecutable)), scannerPath);
+    chmodSync(scannerPath, 0o755);
   } finally {
     const target = realpathSync(scratch);
     if (dirname(target) === cache && basename(target).startsWith('download-')) rmSync(target, { recursive: true, force: true });
@@ -52,7 +53,7 @@ function enableHooks() {
 }
 
 try {
-  if (process.platform !== 'win32' || process.arch !== 'x64') throw new SecurityError('此安装脚本使用 Windows x64 Gitleaks。');
+  if (!supportsScanner) throw new SecurityError('此安装脚本使用 Windows 或 Linux x64 Gitleaks。');
   if (args.some((arg, index) => !['--ci', '--archive'].includes(arg) && (archiveOption < 0 || index !== archiveOption + 1))
     || (archiveOption >= 0 && (!archive || archive.startsWith('--')))) throw new SecurityError('用法为 pnpm security:setup [--archive 文件路径] [--ci]。');
   await installScanner();

@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { androidFixture } from './android-fixture.mjs';
+import { androidConfig } from './android-release-config.mjs';
 
 const output = resolve(process.env.TSUKIAKARI_ANDROID_QA || 'artifacts/android/ui-check');
 const bundledWeb = process.env.TSUKIAKARI_ANDROID_WEB_ASSETS;
@@ -68,7 +69,7 @@ async function account(context, credentials, testConnection = false) {
 
 try {
   browser = await chromium.launch({ headless: true, executablePath: process.env.TSUKIAKARI_QA_BROWSER || undefined });
-  const context = await browser.newContext({ viewport: { width: 390, height: 820 }, userAgent: 'Chromium TsukiakariAndroid/0.1.1',
+  const context = await browser.newContext({ viewport: { width: 390, height: 820 }, userAgent: 'Chromium TsukiakariAndroid/' + androidConfig.version,
     isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
   page = await account(context, fixture.member, true);
   const contacts = page.locator('#contacts-dialog');

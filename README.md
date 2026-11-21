@@ -6,7 +6,9 @@
 
 **0.4.2** 放大聊天文字，修复会话分类与通讯录切换时的闪烁。通讯录和关闭提示使用应用内浮窗。见[版本说明](docs/maintenance-0.4.2.md)。
 
-**安卓 0.1.1** 打开后直接登录。同一账号的会话、聊天和已读状态由共享后端同步。服务器保留最近30天聊天记录。 [安卓指南](docs/android.md) · [版本说明](docs/android-0.1.1.md)
+**0.4.3 预发布**统一提供 Android、Windows 安装包和校验文件。安卓打开后直接登录，同一账号的会话、聊天和已读状态由共享后端同步。服务器保留最近30天聊天记录。 [发布说明](docs/release-0.4.3.md) · [安卓指南](docs/android.md)
+
+[下载 Android APK](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.3/Tsukiakari-0.4.3-Android.apk) · [Windows 安装版](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.3/Tsukiakari-0.4.3-Setup.exe) · [Windows 免安装版](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.3/Tsukiakari-0.4.3-Portable.exe) · [SHA-256 校验](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.3/SHA256SUMS.txt)
 
 ## 功能
 
@@ -19,9 +21,9 @@
 
 ## 安装与首次启动
 
-0.4.2 的安装包名为 `Tsukiakari-0.4.2-Setup.exe`，免安装版为 `Tsukiakari-0.4.2-Portable.exe`。程序文件为 `Tsukiakari.exe`，界面、快捷方式、托盘和通知显示「月明かり」。
+0.4.3 的安装包名为 `Tsukiakari-0.4.3-Setup.exe`，免安装版为 `Tsukiakari-0.4.3-Portable.exe`。程序文件为 `Tsukiakari.exe`，界面、快捷方式、托盘和通知显示「月明かり」。Windows 附件为 x64 测试构建，尚无 Authenticode 签名。 [全部发行附件](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/tag/v0.4.3)
 
-构建结果见本地 `artifacts/desktop-app.json`。仓库不保存 EXE、运行数据库或任何实例凭据；正式可下载版本以 [Releases](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases) 实际内容为准。
+从源码构建时，Windows 构建清单写入 `artifacts/desktop-app.json`。
 
 1. 运行安装版，或把免安装版放到可写文件夹后双击。
 2. 空数据目录首次打开时，自行创建本机管理员；没有内置账号或默认密码。
@@ -54,7 +56,7 @@
 | --- | --- |
 | ![通讯录浮窗](docs/images/contacts-window.png) | ![关闭月明かり](docs/images/close-options.png) |
 
-### Android 0.1.1
+### Android 界面
 
 以下界面来自 Android 15 模拟器，使用隔离的演示账号与消息。
 
@@ -111,17 +113,17 @@ pnpm check:desktop:portable   # 验证真实单文件启动器
 
 ## 提交与发布前安全检查
 
-仓库规则见 [AGENTS.md](AGENTS.md)。每个 Windows x64 工作副本初始化一次，已有其他 Git 钩子时先合并。准备发布包时需要可用的 7-Zip 和已安装的桌面构建依赖。
+仓库规则适用于 Windows 和 Linux x64 工具链。已有其他 Git 钩子时先合并。Windows 发布包检查需要可用的 7-Zip 和已安装的桌面构建依赖。 [开发规范](AGENTS.md) · [发布流程](docs/releasing.md)
 
 ```powershell
 pnpm security:setup         # 以 SHA-256 校验并安装固定版本的 Gitleaks，启用本仓库钩子
 pnpm security:check staged  # 检查 Git 暂存内容和作者邮箱
 pnpm security:check history # 检查本地可访问引用的历史及 Git 元数据
 pnpm security:check release # 打包后检查安装包及免安装包的实际内容
-pnpm security:check android # 校验安卓测试包的签名、内容和连接安全策略
+pnpm security:check android release # 检查安卓发布包、签名、源码提交和 HTTPS 地址
 ```
 
-Git 会在提交及推送时再次检查。检查失败先处理问题再重试。扫描只输出位置和规则；真实 `.env`、数据、备份及日志保留在本机。截图、附件、文本中的个人信息和扫描器难以识别的凭证仍要人工核对。CI 在上传构建产物前检查完整历史和两个可执行包。
+Git 会在提交及推送时再次检查。检查失败先处理问题再重试。扫描只输出位置和规则，真实 `.env`、数据、备份及日志保留在本机。截图、附件和文本仍需人工核对。CI 在上传前扫描历史、安装包和演示验收报告。
 
 ## 后端与 AstrBot
 

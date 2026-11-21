@@ -2,10 +2,12 @@
 
 ## 安装及登录
 
-1. 在 Android 9 或更新的设备上更新 Android System WebView。打开 `Tsukiakari-0.1.1-Android.apk`，由系统确认安装。APK 由本地测试证书签名。
+1. 在 Android 9 或更新的设备上更新 Android System WebView。下载 `Tsukiakari-0.4.3-Android.apk`，打开并按系统提示确认安装。 [Android APK](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.3/Tsukiakari-0.4.3-Android.apk) · [SHA-256](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.3/Tsukiakari-0.4.3-Android.apk.sha256)
 2. 打开月明かり，在登录页输入共享聊天账号和密码。勾选「记住登录状态」可在重启后继续使用有效会话。网络或服务暂不可用时，登录页会提供「重试连接」。在「我的」里可退出登录。
 3. 手机、平板和已启用共享模式的桌面端使用同一账号时，会话、已读和最近 30 天的消息会自动同步。网站管理仍使用独立授权。 [共享后端上线配置](chat-retention.md)
-4. 更新时使用同样包名与签名，否则安卓会拒绝覆盖安装。卸载前清点此设备的草稿与文件。
+4. Release APK 的包名为 `wiki.shion.tsukiakari`，沿用此前交付的本机 0.1.1 签名。设备上使用该签名的旧包可覆盖升级。CI 与 QA 使用独立包名，数据各自保存在系统分配的应用空间。 [Android 应用签名](https://developer.android.com/studio/publish/app-signing)
+
+发布包使用预置的 `https://shion.wiki`。本次验收时生产聊天会话接口返回 404，真实账号登录仍需服务端开通共享聊天路由。模拟器的双端同步测试使用隔离聊天服务。
 
 ## 手机和平板
 
@@ -38,21 +40,21 @@
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm android:build
+pnpm android:build --ci
 pnpm android:build --debug
-pnpm security:check android
+pnpm security:check android ci qa
 ```
 
-APK 和 SHA-256 清单写到 `artifacts/android/0.1.1/` 与 `artifacts/android/0.1.1-qa/`。同一构建机复用测试签名。Windows 签名文件位于当前用户的本地应用数据，Linux 构建机使用忽略的构建目录。
+CI 和 QA APK 的目录分别为 `artifacts/android/0.4.3-ci/` 与 `artifacts/android/0.4.3-qa/`。二者使用临时签名，适合独立安装验收。签名发布包由维护者从干净的发布提交运行 `pnpm android:build`，输出到 `artifacts/android/0.4.3/`。 [维护者签名与发布流程](releasing.md)
 
-QA 版包名以 `.qa` 结尾，预置供 ADB 转发的回环 HTTP，默认端口 4187。开发机可用 `TSUKIAKARI_ANDROID_QA_PORT` 在构建和启动演示服务时统一选择端口。标准包从 `deploy/chat-public.json` 编译公开 HTTPS 地址。
+QA 版包名以 `.qa` 结尾，预置供 ADB 转发的回环 HTTP，默认端口 4187。开发机可用 `TSUKIAKARI_ANDROID_QA_PORT` 在构建和启动演示服务时统一选择端口。Release 与 `.ci` 均从 `deploy/chat-public.json` 编译公开 HTTPS 地址。
 
 手动验收时，在电脑运行 `node --disable-warning=ExperimentalWarning scripts/android-fixture.mjs`。脚本启动隔离的网站、聊天数据库与模拟 AstrBot，并把演示登录信息写入忽略目录内的 `artifacts/android/fixture/fixture.private.json`。在已授权 USB 调试的设备安装 QA 包后执行 `adb reverse tcp:4187 tcp:4187`，直接用演示账号登录。桌面可以同时打开同一服务。 [本地联调配置](chat-retention.md#验证与部署)
 
 ```sh
 pnpm exec playwright install chromium
 pnpm check:android:ui
-pnpm check:android:device artifacts/android/0.1.1/Tsukiakari-0.1.1-Android.apk artifacts/android/0.1.1-qa/Tsukiakari-0.1.1-QA.apk
+pnpm check:android:device artifacts/android/0.4.3-ci/Tsukiakari-0.4.3-CI.apk artifacts/android/0.4.3-qa/Tsukiakari-0.4.3-QA.apk
 ```
 
 设备验收脚本默认使用隔离的 `emulator-5554`，会调整该模拟器的显示与输入设置。测试数据留在忽略的 `artifacts/`。CI 验收截图只含演示数据。

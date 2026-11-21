@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 已建立草稿预发布的标签，例如 v0.4.3
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -29,6 +34,7 @@ jobs:
       - run: pnpm build
       - run: pnpm package:desktop
       - run: pnpm security:check release
+      - run: pnpm check:desktop
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: Tsukiakari-Windows
@@ -37,69 +43,67 @@ jobs:
             artifacts/Tsukiakari-*/Tsukiakari-*-Portable.exe
           if-no-files-found: error
   android:
+    if: inputs.release_tag == ''
+    uses: ./.github/workflows/android.yml
+  android-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    permissions:
+      contents: write # Required to read the unpublished draft. The job never edits releases.
+    uses: ./.github/workflows/android.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+  stage-release-assets:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    needs: [windows, android-release]
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          persist-credentials: false
-      - uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1 # v3
+          name: Tsukiakari-Android
+          path: ${{ runner.temp }}/verified-android
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          version: '11.25.0'
-          runtime: 'node@24.22.3'
-          install: false
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --dir desktop install --frozen-lockfile
-      - run: node desktop/node_modules/electron/install.js
-      - name: Build APKs and test with Android 15
+          name: Tsukiakari-Windows
+          path: ${{ runner.temp }}/verified-windows
+      - name: Attach verified Windows files and checksums to draft
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          export JAVA_HOME="$JAVA_HOME_17_X64"
-          export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
-          export ANDROID_USER_HOME="$RUNNER_TEMP/tsukiakari-android"
-          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
-          mkdir -p "$ANDROID_AVD_HOME"
-          sdkmanager="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)"
-          test -x "$sdkmanager"
-          image='system-images;android-35;default;x86_64'
-          "$sdkmanager" --install 'platforms;android-35' 'build-tools;35.0.0' 'emulator' "$image"
-          pnpm android:build
-          pnpm android:build --debug
-          test -c /dev/kvm
-          sudo chown "$(id -u):$(id -g)" /dev/kvm
-          "$ANDROID_HOME/emulator/emulator" -accel-check
-          avd="$ANDROID_AVD_HOME/tsukiakari_ci.avd"
-          echo no | "$(dirname "$sdkmanager")/avdmanager" create avd --force --name tsukiakari_ci --package "$image" \
-            --device pixel_2 --path "$avd"
-          test -f "$avd/config.ini"
-          if [ ! -f "$ANDROID_AVD_HOME/tsukiakari_ci.ini" ]; then
-            printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-35\n' "$avd" > "$ANDROID_AVD_HOME/tsukiakari_ci.ini"
-          fi
-          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fx tsukiakari_ci
-          mkdir -p artifacts/android/device-check
-          log=artifacts/android/device-check/emulator.log
-          adb start-server
-          "$ANDROID_HOME/emulator/emulator" -avd tsukiakari_ci -port 5554 -no-window -no-audio \
-            -no-snapshot -no-metrics -no-boot-anim -gpu swiftshader -feature -Vulkan \
-            -memory 2048 -cores 2 -partition-size 3072 </dev/null > "$log" 2>&1 &
-          emulator_pid=$!
-          trap 'code=$?; if ((code)); then tail -n 65 "$log"; adb devices -l; fi; adb -s emulator-5554 emu kill >/dev/null 2>&1 || true; exit "$code"' EXIT
-          booted=0
-          for ((attempt=0; attempt<115; attempt++)); do
-            kill -0 "$emulator_pid"
-            if [ "$(timeout 5 adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d "\r" || true)" = 1 ]; then
-              booted=1
-              break
-            fi
-            sleep 2
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          release_id=$(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json databaseId,isDraft,isPrerelease \
+            --jq 'select(.isDraft and .isPrerelease) | .databaseId')
+          [[ "$release_id" =~ ^[0-9]+$ ]]
+          asset_list="repos/$GITHUB_REPOSITORY/releases/$release_id/assets"
+          stage="$RUNNER_TEMP/verified-android"
+          version="${RELEASE_TAG#v}"
+          apk="Tsukiakari-$version-Android.apk"
+          setup="Tsukiakari-$version-Setup.exe"
+          portable="Tsukiakari-$version-Portable.exe"
+          shopt -s globstar nullglob
+          for asset in "$setup" "$portable"; do
+            candidates=("$RUNNER_TEMP"/verified-windows/**/"$asset")
+            test "${#candidates[@]}" = 1
+            cp -- "${candidates[0]}" "$stage/$asset"
           done
-          test "$booted" = 1
-          TSUKIAKARI_QA_ELECTRON=1 xvfb-run -a pnpm check:android:device artifacts/android/*/*-Android.apk artifacts/android/*/*-QA.apk
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: always()
-        with:
-          name: Tsukiakari-Android-QA
-          path: |
-            artifacts/android/device-check/report.json
-            artifacts/android/device-check/screens/*.png
-          if-no-files-found: ignore
+          cd "$stage"
+          sha256sum "$apk" "$setup" "$portable" > SHA256SUMS.txt
+          digest() { sha256sum -- "$1" | cut -d ' ' -f 1; }
+          assets=$(gh api "$asset_list")
+          for asset in "$apk" "$apk.sha256" android-build.json; do
+            test "$(jq -r --arg name "$asset" '.[] | select(.name == $name) | .digest' <<< "$assets")" = "sha256:$(digest "$asset")"
+          done
+          pending=()
+          for asset in "$setup" "$portable" SHA256SUMS.txt; do
+            existing=$(jq -r --arg name "$asset" '.[] | select(.name == $name) | .digest' <<< "$assets")
+            if [ -z "$existing" ]; then pending+=("$asset"); else test "$existing" = "sha256:$(digest "$asset")"; fi
+          done
+          if (( ${#pending[@]} )); then gh release upload "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" "${pending[@]}"; fi
+          assets=$(gh api "$asset_list")
+          for asset in "$apk" "$setup" "$portable" SHA256SUMS.txt; do
+            test "$(jq -r --arg name "$asset" '.[] | select(.name == $name) | .digest' <<< "$assets")" = "sha256:$(digest "$asset")"
+          done

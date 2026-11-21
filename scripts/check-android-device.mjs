@@ -2,31 +2,34 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { _android as android, _electron as electron } from 'playwright';
 import { androidFixture } from './android-fixture.mjs';
-import { androidChatOrigin } from './android-release-config.mjs';
+import { androidChatOrigin, androidVariant } from './android-release-config.mjs';
 
 const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
 assert.ok(sdk, 'Set ANDROID_HOME before running the device check.');
 const binaries = process.argv.slice(2).map(path => resolve(path));
-assert.equal(binaries.length, 2, 'Pass the HTTPS APK and the QA APK in that order.');
+assert.equal(binaries.length, 2, 'Pass the release or CI HTTPS APK, followed by the QA APK.');
 const adbPath = join(sdk, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb');
 const serial = process.env.ANDROID_SERIAL || 'emulator-5554';
 assert.match(serial, /^emulator-\d+$/, 'This script changes display settings on an isolated emulator.');
 const folder = resolve(process.env.TSUKIAKARI_ANDROID_QA || 'artifacts/android/device-check');
 const screens = join(folder, 'screens');
 const component = 'wiki.shion.tsukiakari.MainActivity';
-const secure = 'wiki.shion.tsukiakari', qa = secure + '.qa';
+const httpsBuild = androidVariant(basename(binaries[0]).endsWith('-CI.apk') ? 'ci' : 'release');
+const secure = httpsBuild.package, qa = androidVariant('qa').package;
+assert.equal(basename(binaries[0]), httpsBuild.file);
+assert.equal(basename(binaries[1]), androidVariant('qa').file);
 const adb = async (args, { binary = false, timeout = 27000 } = {}) =>
   (await promisify(execFile)(adbPath, ['-s', serial, ...args], { timeout, encoding: binary ? 'buffer' : 'utf8', maxBuffer: 18 * 1024 * 1024 })).stdout;
 const shell = (...args) => adb(['shell', ...args]);
 const press = key => shell('input', 'keyevent', String(key));
 const start = (app = qa) => shell('am', 'start', '-W', '-n', app + '/' + component);
 const snap = async key => writeFile(join(screens, key + '.png'), await adb(['exec-out', 'screencap', '-p'], { binary: true }));
-const report = { runtime: 'Android emulator using the bundled WebView', checks: [] };
+const report = { runtime: 'Android emulator using the bundled WebView', httpsPackage: secure, checks: [] };
 const pass = message => { report.checks.push(message); console.log('通过 · ' + message); };
 
 async function until(check, label, limit = 20000) {

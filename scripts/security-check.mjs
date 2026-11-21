@@ -132,14 +132,15 @@ const commands = {
   push,
   message: () => scan(['stdin'], git(['stripspace', '--strip-comments'], readFileSync(process.argv[3]))),
   release: async () => (await import('./security-release.mjs')).checkRelease({ scan, protectedPath }),
-  android: async () => (await import('./security-android.mjs')).checkAndroid({ scan, protectedPath }),
+  android: async () => (await import('./security-android.mjs')).checkAndroid({ scan, protectedPath }, process.argv.length > 3 ? process.argv.slice(3) : undefined),
+  'android-evidence': async () => (await import('./security-android.mjs')).checkAndroidEvidence({ scan }),
 };
 
 // Importing helpers must not run a scan.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const command = process.argv[2];
-    if (!Object.hasOwn(commands, command)) throw new SecurityError('用法为 pnpm security:check staged|history|release|android。');
+    if (!Object.hasOwn(commands, command)) throw new SecurityError('用法为 pnpm security:check staged|history|release|android|android-evidence。');
     verifiedScanner();
     await commands[command]();
     console.log(`安全检查通过（${command}）。`);
