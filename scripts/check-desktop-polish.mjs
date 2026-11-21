@@ -149,7 +149,31 @@ async function checkMenuPrompts({ app, page, member, native, report }) {
   const window = app.waitForEvent('window');
   await invoke(native, '备用模型连接设置…');
   const settings = await window;
-  await settings.getByText('尚未设置密钥。', { exact: true }).waitFor();
+  try {
+    await settings.getByText('尚未设置密钥。', { exact: true }).waitFor();
+  } catch (error) {
+    const renderer = await settings.evaluate(() => ({
+      settingsPage: location.protocol === 'file:' && location.pathname.endsWith('/settings.html'),
+      bridge: typeof window.modelSettings?.read === 'function',
+      scriptInDocument: [...document.scripts].some(s => s.src.endsWith('/settings.js')),
+      styleLoaded: document.styleSheets.length > 0,
+      form: Boolean(document.querySelector('#settings')),
+      readError: document.querySelector('#status')?.textContent === '暂时无法读取设置，请关闭后重试。',
+      hasHint: Boolean(document.querySelector('#key-hint')?.textContent),
+    })).catch(() => ({ closed: true }));
+    const ipc = await settings.evaluate(async () => {
+      if (!window.modelSettings) return 'bridge-unavailable';
+      try { await window.modelSettings.read(); return 'readable'; }
+      catch (failure) { return failure.message.includes('无权读取设置') ? 'denied' : 'read-failed'; }
+    }).catch(() => 'window-closed');
+    const matchesFileUrl = await app.evaluate(({ app, BrowserWindow }, id) => {
+      const { join } = require('node:path');
+      const { pathToFileURL } = require('node:url');
+      return BrowserWindow.fromId(id)?.webContents.getURL() === pathToFileURL(join(app.getAppPath(), 'settings.html')).href;
+    }, await (await app.browserWindow(settings)).evaluate(w => w.id)).catch(() => false);
+    console.error('备用模型窗口诊断', { ...renderer, ipc, matchesFileUrl });
+    throw error;
+  }
   await settings.getByLabel('接口地址', { exact: true }).fill('https://example.invalid/v1');
   await settings.getByLabel('模型名称', { exact: true }).fill('demo-model');
   await settings.getByLabel('API 密钥', { exact: true }).fill('demo-token-only-for-local-qa');
