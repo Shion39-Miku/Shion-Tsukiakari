@@ -1,6 +1,7 @@
 'use strict';
 const { resolve, join } = require('node:path');
-const {existsSync}=require('node:fs');
+const { existsSync, realpathSync } = require('node:fs');
+const { fileURLToPath, pathToFileURL } = require('node:url');
 
 function dataDirectory({ explicit, portable, appData }) {
   // Keep the complete old profile in place: cookies, encrypted credentials,
@@ -11,6 +12,18 @@ function dataDirectory({ explicit, portable, appData }) {
 function localNavigation(value, origin) {
   try { const url = new URL(value); return url.origin === origin && !url.username && !url.password; }
   catch { return false; }
+}
+function trustedDocument(value, expected) {
+  try {
+    if (value === pathToFileURL(expected).href) return true;
+    const url = new URL(value);
+    if (url.protocol !== 'file:' || url.host || url.search || url.hash) return false;
+    const path = fileURLToPath(url);
+    // Chromium and Node can spell the same Windows file differently, including
+    // drive casing and short paths. Electron's realpath also resolves ASAR files.
+    return path === expected || (process.platform === 'win32' && /^[a-z]:\\/i.test(path)
+      && realpathSync.native(path) === realpathSync.native(expected));
+  } catch { return false; }
 }
 function externalLink(value) {
   try {
@@ -27,4 +40,4 @@ function modelConfig(value, current = {}) {
   if (!model || model.length > 200 || /[\r\n\x00]/.test(model)) throw new Error('请填写有效的模型名称。');
   return { apiBase, apiKey, model };
 }
-module.exports = { dataDirectory, localNavigation, externalLink, modelConfig };
+module.exports = { dataDirectory, localNavigation, trustedDocument, externalLink, modelConfig };

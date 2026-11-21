@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import policy from '../desktop/policy.cjs';
 import desktopFeatures from '../desktop/features.cjs';
 import { readConfig } from '../server/core.mjs';
@@ -29,6 +30,16 @@ test('desktop navigation and model settings reject privileged URLs and unsafe de
   const origin = 'http://127.0.0.1:4180';
   assert.equal(policy.localNavigation(origin + '/chat', origin), true);
   for (const url of ['file:///C:/Windows/win.ini', 'javascript:alert(1)', 'http://127.0.0.1:4181/chat', 'http://user:pass@127.0.0.1:4180/chat', 'https://example.com/']) assert.equal(policy.localNavigation(url, origin), false);
+  const settings = fileURLToPath(new URL('../desktop/settings.html', import.meta.url));
+  const settingsUrl = pathToFileURL(settings).href;
+  assert.equal(policy.trustedDocument(settingsUrl.replace('settings.html', '%73ettings.html'), settings), true);
+  if (process.platform === 'win32') {
+    const differentCase = settingsUrl.replace(/^file:\/\/\/([A-Za-z]):/, (_, drive) => 'file:///' + drive.toLowerCase() + ':');
+    assert.equal(policy.trustedDocument(differentCase, settings), true);
+  }
+  for (const other of [settingsUrl + '?extra=1', settingsUrl + '#fragment', settingsUrl.replace('settings.html', 'splash.html'), 'file://other.invalid/settings.html', 'https://example.com/settings.html']) {
+    assert.equal(policy.trustedDocument(other, settings), false);
+  }
   assert.equal(policy.externalLink('https://shion.wiki/music'), true);
   for (const url of ['file:///C:/Windows/win.ini', 'javascript:alert(1)', 'http://example.com/', 'https://user:pass@example.com/', 'https://localhost/']) assert.equal(policy.externalLink(url), false);
   assert.deepEqual(policy.modelConfig({ apiBase: 'http://127.0.0.1:6198/v1/', model: 'astrbot', apiKey: '' }, { apiKey: 'prior' }), { apiBase: 'http://127.0.0.1:6198/v1', model: 'astrbot', apiKey: 'prior' });

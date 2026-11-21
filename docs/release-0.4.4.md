@@ -1,11 +1,13 @@
-# 月明かり v0.4.3 预发布
+# 月明かり v0.4.4 预发布
 
-本次加入可直接安装的 Android APK，与 Windows x64 安装版、免安装版一同发布。发行附件对应同一 Git 标签，附带 SHA-256 文件。 [下载与校验](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/tag/v0.4.3)
+本次加入可直接安装的 Android APK，与 Windows x64 安装版、免安装版一同发布。发行附件对应同一 Git 标签，附带 SHA-256 文件。 [下载与校验](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/tag/v0.4.4)
+
+Windows 修正了安装路径有多种等价写法时，备用模型连接设置和启动提示无法读取的问题。窗口身份及管理员权限仍由主进程核验。
 
 ## 安卓安装和升级
 
-- 下载 `Tsukiakari-0.4.3-Android.apk`。支持 Android 9 及以上，目标 API 35。打开文件，由 Android 确认安装。
-- 包名是 `wiki.shion.tsukiakari`，`versionCode` 为 3。沿用之前交付的 0.1.1 签名，适合更新同包名、同签名的旧版本。Actions 的 `.ci` 和 `.qa` 包各用独立包名及临时签名。 [安卓指南](android.md)
+- 下载 `Tsukiakari-0.4.4-Android.apk`。支持 Android 9 及以上，目标 API 35。打开文件，由 Android 确认安装。
+- 包名是 `wiki.shion.tsukiakari`，`versionCode` 为 4。沿用之前交付的 0.1.1 签名，适合更新同包名、同签名的旧版本。Actions 的 `.ci` 和 `.qa` 包各用独立包名及临时签名。 [安卓指南](android.md)
 - 打开应用后直接输入账号和密码。手机使用底部导航和全屏聊天，平板使用会话与聊天并列的布局，支持展开群成员面板。
 
 ## 功能与验收范围

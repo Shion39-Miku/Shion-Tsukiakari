@@ -5,8 +5,7 @@ const { createServer } = require('node:net');
 const { randomBytes } = require('node:crypto');
 const fs = require('node:fs');
 const { join, dirname } = require('node:path');
-const { pathToFileURL } = require('node:url');
-const { dataDirectory, localNavigation, externalLink, modelConfig } = require('./policy.cjs');
+const { dataDirectory, localNavigation, trustedDocument, externalLink, modelConfig } = require('./policy.cjs');
 const {createDesktopFeatures}=require('./features.cjs');
 const { createWindowPrompts } = require('./window-prompts.cjs');
 
@@ -54,14 +53,14 @@ function relaunch() {
   pendingRelaunch = true;
   desktopFeatures.requestExit();
 }
-const allowedPrompt = url => url === pathToFileURL(splashPath).href || url === pathToFileURL(settingsPath).href
+const allowedPrompt = url => trustedDocument(url, splashPath) || trustedDocument(url, settingsPath)
   || Boolean(origin && localNavigation(url, origin));
 const okay = [{ id: 'ok', label: '知道了', tone: 'primary' }];
 const explain = (window, title, message, detail) => prompts.ask(window, { title, message, detail, actions: okay });
 async function showStartupError(error) {
   log(error.message);
   if (!win || win.isDestroyed()) { app.quit(); return; }
-  if (win.webContents.getURL() !== pathToFileURL(splashPath).href) await win.loadFile(splashPath);
+  if (!trustedDocument(win.webContents.getURL(), splashPath)) await win.loadFile(splashPath);
   const answer = await prompts.ask(win, {
     title: '月明かり未能启动',
     message: '本地服务或连接未能就绪。可以重新启动后再试。',
@@ -208,7 +207,8 @@ async function showSettings() {
   settingsWin.on('closed', () => { settingsWin = null; settingsOwner = null; }); await settingsWin.loadFile(settingsPath);
 }
 function settingSender(event) {
-  return settingsWin && event.sender === settingsWin.webContents && event.senderFrame === settingsWin.webContents.mainFrame && event.senderFrame.url === pathToFileURL(settingsPath).href;
+  return settingsWin && event.sender === settingsWin.webContents && event.senderFrame === settingsWin.webContents.mainFrame
+    && trustedDocument(event.senderFrame?.url, settingsPath);
 }
 ipcMain.handle('hoshifuru:model:read', async (event) => {
   if (!settingSender(event) || !await verifiedAdmin(settingsOwner)) throw new Error('无权读取设置。');

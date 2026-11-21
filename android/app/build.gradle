@@ -22,8 +22,8 @@ android {
         applicationId 'wiki.shion.tsukiakari'
         minSdk 28
         targetSdk 35
-        versionCode 3
-        versionName '0.4.3'
+        versionCode 4
+        versionName '0.4.4'
         buildConfigField 'String', 'CHAT_ORIGIN', "\"${productionOrigin}\""
     }
     buildFeatures { buildConfig true }
