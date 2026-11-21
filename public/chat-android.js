@@ -6,7 +6,7 @@ const defaults = { cards: true, sound: true, vibrate: false, groups: true, quiet
 const kinds = { ai: 'AI', direct: '好友', group: '群聊' };
 const threadPattern = /^[0-9a-f-]{36}$/i;
 
-export function androidClient({ account, request, navigate, contacts, modal, confirm, active, visibility, refreshRead, logout }) {
+export function androidClient({ account, request, navigate, contacts, modal, confirm, active, visibility, refreshRead, logout, reconnect }) {
   if (!androidHost) return null;
   document.body.classList.add('android-app');
   document.body.dataset.androidPane = 'list';
@@ -229,7 +229,7 @@ export function androidClient({ account, request, navigate, contacts, modal, con
     const status = el('p', { class: 'inline-status', role: 'status' });
     save.onclick = () => void exportData(save, status);
     const remove = action('卸载应用', 'trash');
-    remove.onclick = () => confirm('前往系统卸载', '卸载会清除这台设备的缓存、登录和未同步草稿。账号与服务器聊天仍保留。', '前往系统', async () => send('uninstall'));
+    remove.onclick = () => confirm('前往系统卸载', '卸载会清除这台设备的缓存、登录和未同步草稿。服务器账号仍可登录，聊天记录按 30 天保留。', '前往系统', async () => send('uninstall'));
     present('暂别月光', el('section', { class: 'farewell-panel' },
       image('/assets/farewell.webp', '月下的詩音与知遥', { width: 760, height: 760, loading: 'eager' }),
       el('div', { class: 'farewell-scene' }, el('h3', {}, '先别道晚安…'),
@@ -245,8 +245,8 @@ export function androidClient({ account, request, navigate, contacts, modal, con
     if (section === 'device') { notificationPage(present); return true; }
     if (section === 'farewell') { farewell(present); return true; }
     if (section === 'connection') {
-      const change = action('更改聊天服务地址'); change.onclick = () => send('connection');
-      present('连接状态', el('p', { class: 'muted' }, '账号和聊天由当前连接的服务管理。变更服务后需在新服务重新登录。'), change);
+      const retry = action('立即重连'); retry.onclick = reconnect;
+      present('连接状态', el('p', { 'data-connection-status': '', role: 'status' }, '正在连接'), retry);
       return true;
     }
     return false;
@@ -256,7 +256,7 @@ export function androidClient({ account, request, navigate, contacts, modal, con
     rail, bindSwipe, layout, list, page, isReading, restore, showNotice,
     session(value) { owner = value.key; send('session', { owner }); },
     logout(explicit) { owner = null; cards.replaceChildren(); clearTimeout(cardTimer); seen.clear(); pageUpdate = null; send('logout', { explicit }); },
-    loginAction() { const button = action('更改聊天服务地址'); button.onclick = () => send('connection'); return button; },
+    sessionRefreshed() { send('sessionRefreshed'); },
     read(threads) { if (owner) send('readSummary', { threads: threads.filter(thread => !thread.unread).slice(0, 150).map(thread => thread.id) }); },
   };
 }

@@ -16,6 +16,8 @@ from pathlib import Path
 from urllib.parse import unquote
 from aiohttp import web
 
+CHAT_RETENTION_SECONDS = 30 * 24 * 60 * 60
+
 
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -33,7 +35,7 @@ class Gateway:
         self.db = sqlite3.connect(self.path)
         self.path.chmod(0o600)
         self.db.row_factory = sqlite3.Row
-        self.db.executescript("""PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
+        self.db.executescript("""PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;
         CREATE TABLE IF NOT EXISTS extensions(persona_id TEXT PRIMARY KEY,document TEXT NOT NULL,avatar BLOB,updated_at REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,persona_id TEXT NOT NULL,state TEXT NOT NULL,proposal TEXT NOT NULL,result TEXT,created_at REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS scopes(umo TEXT PRIMARY KEY,thread_id TEXT NOT NULL,ai_id TEXT NOT NULL,cid TEXT NOT NULL,epoch INTEGER NOT NULL,summary TEXT NOT NULL,roster TEXT NOT NULL,memories TEXT NOT NULL,updated_at REAL NOT NULL);
@@ -41,10 +43,18 @@ class Gateway:
         CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,umo TEXT NOT NULL,fingerprint TEXT NOT NULL,state TEXT NOT NULL,reply TEXT NOT NULL,updated_at REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS audits(id INTEGER PRIMARY KEY,actor TEXT NOT NULL,persona_id TEXT NOT NULL,action TEXT NOT NULL,before_json TEXT,after_json TEXT,created_at REAL NOT NULL);
         """)
+        if not any(row["name"] == "expires_at" for row in self.db.execute("PRAGMA table_info(requests)")):
+            self.db.execute("ALTER TABLE requests ADD COLUMN expires_at REAL")
+            self.db.execute("UPDATE requests SET expires_at=0,reply='' ")
+        if not any(row["name"] == "history_cleared" for row in self.db.execute("PRAGMA table_info(scopes)")):
+            self.db.execute("ALTER TABLE scopes ADD COLUMN history_cleared INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("UPDATE scopes SET summary=''")
+        self.db.execute("CREATE INDEX IF NOT EXISTS requests_expiry ON requests(expires_at)")
         self.db.execute("UPDATE requests SET state='failed' WHERE state='running'")
         self.db.commit()
         self.locks, self.active = {}, {}
         self.runner = None
+        self.pruning = None
 
     def lock(self, key):
         return self.locks.setdefault(key, asyncio.Lock())
@@ -59,8 +69,38 @@ class Gateway:
         self.runner = web.AppRunner(application, access_log=None)
         await self.runner.setup()
         await web.TCPSite(self.runner, "127.0.0.1", int(self.config.get("port", 6199))).start()
+        self.pruning = asyncio.create_task(self.prune_loop())
+
+    async def prune_chat_cache(self):
+        cutoff = time.time()
+        while True:
+            deleted = self.db.execute("""DELETE FROM requests WHERE id IN (
+                SELECT id FROM requests WHERE expires_at<=? ORDER BY expires_at LIMIT 128)""", (cutoff,)).rowcount
+            self.db.commit()
+            if deleted < 128:
+                break
+            await asyncio.sleep(0)
+        # Older versions duplicated the Node chat timeline into AstrBot's native history.
+        # Clean only conversations this connector registered, keeping the identity and memory.
+        for row in self.db.execute("SELECT umo,cid FROM scopes WHERE history_cleared=0").fetchall():
+            async with self.lock("scope:" + row["umo"]):
+                await self.context.conversation_manager.update_conversation(row["umo"], row["cid"], history=[])
+                self.db.execute("UPDATE scopes SET history_cleared=1,summary='' WHERE umo=?", (row["umo"],))
+                self.db.commit()
+            await asyncio.sleep(0)
+
+    async def prune_loop(self):
+        while True:
+            try:
+                await self.prune_chat_cache()
+            except Exception:
+                logging.getLogger(__name__).warning("AstrBot chat cache cleanup will retry")
+            await asyncio.sleep(15 * 60)
 
     async def close(self):
+        if self.pruning:
+            self.pruning.cancel()
+            await asyncio.gather(self.pruning, return_exceptions=True)
         for task in list(self.active.values()):
             task.cancel()
         if self.active:
@@ -111,7 +151,7 @@ class Gateway:
         path, method = request.path, request.method
         if path == "/v2/health" and method == "GET":
             import importlib.metadata
-            return web.json_response({"ok": True, "astrbot": importlib.metadata.version("astrbot"), "connector": "0.3.0", "providerAvailable": bool(self.context.get_provider_by_id(self.config["provider_id"]))})
+            return web.json_response({"ok": True, "astrbot": importlib.metadata.version("astrbot"), "connector": "0.3.1", "providerAvailable": bool(self.context.get_provider_by_id(self.config["provider_id"]))})
         if path == "/v2/agents" and method == "GET":
             allowed = self.config.get("allowed_persona_ids")
             items = [p for p in await self.list_personas() if p["enabled"] and (allowed is None or p["id"] in allowed)]
@@ -145,7 +185,7 @@ class Gateway:
                 raise web.HTTPNotFound()
             return web.Response(body=row[0], content_type="image/png", headers={"Cache-Control": "no-store"})
         if path.startswith("/v2/requests/") and method == "GET":
-            row = self.db.execute("SELECT id,state,reply FROM requests WHERE id=?", (path.split("/")[-1],)).fetchone()
+            row = self.db.execute("SELECT id,state,reply FROM requests WHERE id=? AND expires_at>?", (path.split("/")[-1], time.time())).fetchone()
             return web.json_response({"item": dict(row) if row else None})
         if path == "/v2/scopes/revoke" and method == "POST":
             data = await request.json(); umo = data["umo"]
@@ -295,6 +335,8 @@ class Gateway:
         prior = self.db.execute("SELECT * FROM requests WHERE id=?", (request_id,)).fetchone()
         fingerprint = digest(body)
         if prior:
+            if prior["expires_at"] <= time.time():
+                return web.json_response({"error": {"message": "原消息已超过保留期。"}}, status=410)
             if prior["fingerprint"] != fingerprint:
                 return web.json_response({"error": {"message": "重复编号内容不同。"}}, status=409)
             return web.json_response({"state": prior["state"], "reply": prior["reply"], "umo": umo})
@@ -307,6 +349,18 @@ class Gateway:
         for m in messages:
             if m["role"] == "user" and str(m["senderId"]) not in current_members:
                 raise ValueError("上下文包含已退出的成员。")
+        recorded = time.time()
+        expires = body.get("expiresAt")
+        if expires is None and messages:
+            # Older chat backends can still connect with a timestamped source message.
+            expires = datetime.fromisoformat(messages[-1]["createdAt"].replace("Z", "+00:00")).timestamp() + CHAT_RETENTION_SECONDS
+        elif isinstance(expires, str):
+            expires = datetime.fromisoformat(expires.replace("Z", "+00:00")).timestamp()
+        else:
+            raise ValueError("消息保留期限无效。")
+        if expires <= recorded:
+            return web.json_response({"error": {"message": "原消息已超过保留期。"}}, status=410)
+        expires = min(expires, recorded + CHAT_RETENTION_SECONDS)
         for memory in memories:
             if memory["ownerId"] not in current_members or memory["scope"] not in ("shared", "group", "private") or (memory["scope"] == "group" and memory.get("threadId") != thread) or (memory["scope"] == "private" and kind == "group"):
                 raise ValueError("记忆不属于当前成员或共享范围。")
@@ -317,8 +371,12 @@ class Gateway:
         floor = self.db.execute("SELECT epoch FROM scope_epochs WHERE umo=?", (umo,)).fetchone()
         if (old and epoch < old["epoch"]) or (floor and epoch < floor[0]):
             return web.json_response({"error": {"message": "成员或共享授权已更新。"}}, status=409)
-        self.db.execute("INSERT INTO scopes VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(umo) DO UPDATE SET epoch=excluded.epoch,summary=excluded.summary,roster=excluded.roster,memories=excluded.memories,updated_at=excluded.updated_at", (umo, thread, ai, cid, epoch, body.get("summary", ""), canonical(roster), canonical(memories), time.time()))
-        self.db.execute("INSERT INTO requests VALUES(?,?,?,'running','',?)", (request_id, umo, fingerprint, time.time())); self.db.commit()
+        self.db.execute("""INSERT INTO scopes(umo,thread_id,ai_id,cid,epoch,summary,roster,memories,updated_at,history_cleared)
+            VALUES(?,?,?,?,?,'',?,?,?,1) ON CONFLICT(umo) DO UPDATE SET epoch=excluded.epoch,summary='',
+            roster=excluded.roster,memories=excluded.memories,updated_at=excluded.updated_at""",
+            (umo, thread, ai, cid, epoch, canonical(roster), canonical(memories), recorded))
+        self.db.execute("INSERT INTO requests(id,umo,fingerprint,state,reply,updated_at,expires_at) VALUES(?,?,?,'running','',?,?)",
+                        (request_id, umo, fingerprint, recorded, expires)); self.db.commit()
         self.active[umo] = asyncio.current_task()
         response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream", "Cache-Control": "no-store"})
         await response.prepare(request); text = ""
@@ -347,9 +405,6 @@ class Gateway:
                             if len(text) > 60000:
                                 raise ValueError("回复过长。")
                             await response.write(("data: " + json.dumps({"delta": delta, "conversationId": cid, "umo": umo}, ensure_ascii=False) + "\n\n").encode())
-            history = [{"role": m["role"], "content": (m["senderId"] + " " + m["displayName"] + "：" if m["role"] == "user" else "") + m["body"]} for m in messages]
-            history.append({"role": "assistant", "content": text})
-            await manager.update_conversation(umo, cid, history=history[-50:], persona_id=ident)
             self.db.execute("UPDATE requests SET state='complete',reply=?,updated_at=? WHERE id=?", (text, time.time(), request_id)); self.db.commit()
             await response.write(b"data: [DONE]\n\n")
         except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError):

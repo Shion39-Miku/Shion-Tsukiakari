@@ -1,5 +1,5 @@
 import { check, cleanText, consumeQuota, idPattern, newId, now, Problem, requestKey, sha256, transaction } from './core.mjs';
-import { loginAccount, logoutAccount, requireAccount, requireAdmin, setChatAccount } from './auth.mjs';
+import { loginAccount, logoutAccount, refreshAccount, requireAccount, requireAdmin, setChatAccount } from './auth.mjs';
 import { readJson, readUpload } from './media.mjs';
 import { getContent, listContent } from './catalog.mjs';
 import { draftDetails, editItem, listDrafts, uploadFile } from './drafts.mjs';
@@ -8,6 +8,8 @@ import { recordChange } from './logs.mjs';
 import { createSocial } from './chat-social.mjs';
 import { createChatAI } from './chat-ai.mjs';
 import { createManagement } from './chat-management.mjs';
+import { usableChatUpload } from './chat-access.mjs';
+import { expiredSendHash, retainedAfter, scheduleChatPrune } from './chat-retention.mjs';
 
 const categories = { 音乐: 'music', 歌曲: 'music', 音乐分享: 'music', 游戏: 'games', 游戏分享: 'games', 猫图: 'cats', 猫猫图: 'cats' };
 const paths = { music: '/music', games: '/games', cats: '/cats' };
@@ -21,7 +23,14 @@ export function createChat(db, config, json) {
   let closing = false, loggingIn = 0, fileUploads = 0;
   const contactKeys = () => new Set(social.users().map(user => user.key));
   const members = (id) => social.members(id);
-  const message = (row) => {const value=social.message(baseMessage(row));return ai?ai.decorate(value):value;};
+  const cutoff = () => retainedAfter(config.chatClock);
+  const timestamp = () => config.chatClock ? new Date(config.chatClock()).toISOString() : now();
+  const getRevision = db.prepare('SELECT seq FROM chat_message_changes WHERE message_id=?');
+  const cursor = () => db.prepare("SELECT seq FROM sqlite_sequence WHERE name='chat_message_changes'").get()?.seq || 0;
+  const message = (row) => {
+    const value = social.message({ ...baseMessage(row), revision: row.sync_revision ?? getRevision.get(row.id)?.seq ?? 0 });
+    return ai ? ai.decorate(value) : value;
+  };
   // An interrupted provider request is never silently repeated after a restart.
   db.prepare("UPDATE chat_messages SET status='failed', metadata=json_set(metadata,'$.error',?),updated_at=? WHERE status='generating'")
     .run('服务刚刚重启，已保留收到的回复。可点击重试。', now());
@@ -37,24 +46,39 @@ export function createChat(db, config, json) {
     check(row, '没有找到这段对话。', 404, 'not_found');
     return row;
   };
-  const threadView = (row, session) => ({ id: row.id, kind: row.kind, owner: row.owner,
-    title: row.kind === 'direct' ? members(row.id).find((a) => a.key !== session.key)?.displayName || '私聊' : row.title,
-    unread: db.prepare("SELECT count(*) AS n FROM chat_messages msg WHERE thread_id=? AND sender_key!=? AND status='complete' AND NOT EXISTS(SELECT 1 FROM chat_message_reads r WHERE r.account_key=? AND r.message_id=msg.id)").get(row.id, session.key, session.key).n,
-    createdAt: row.created_at, updatedAt: row.updated_at });
-  const social = createSocial(db, { emit, own, invalidate: (thread) => { for (const run of runs.values()) if (run.thread === thread) run.controller.abort();ai?.invalidate(thread); } });
+  const threadView = (row, session) => {
+    const since = cutoff();
+    const expiredTitle = row.kind === 'ai' && db.prepare(`SELECT 1 FROM chat_generated_titles g JOIN chat_messages m ON m.id=g.message_id
+      WHERE g.thread_id=? AND m.created_at<=?`).get(row.id, since);
+    return { id: row.id, kind: row.kind, owner: row.owner,
+      title: row.kind === 'direct' ? members(row.id).find(a => a.key !== session.key)?.displayName || '私聊' : expiredTitle ? '新的夜话' : row.title,
+      unread: db.prepare(`SELECT count(*) AS n FROM chat_messages msg WHERE thread_id=? AND created_at>? AND sender_key!=? AND status='complete'
+        AND NOT EXISTS(SELECT 1 FROM chat_message_reads r WHERE r.account_key=? AND r.message_id=msg.id)`).get(row.id, since, session.key, session.key).n,
+      createdAt: row.created_at, updatedAt: row.updated_at };
+  };
+  const social = createSocial(db, { emit, own, cutoff, invalidate: (thread) => { for (const run of runs.values()) if (run.thread === thread) run.controller.abort();ai?.invalidate(thread); } });
   const management=createManagement(db,config,{social,emit,onConnection:()=>ai?.reconfigure()});
   const publishMessage = (owner, thread, id) => {
     if (closing) return;
-    const row = db.prepare('SELECT * FROM chat_messages WHERE id=?').get(id);
+    const row = db.prepare('SELECT * FROM chat_messages WHERE id=? AND created_at>?').get(id, cutoff());
     if (row) emit(owner, thread, 'message', { item: message(row) });
   };
-  ai=createChatAI(db,config,{social,own,emit,publish:publishMessage,message});
+  ai=createChatAI(db,config,{social,own,emit,publish:publishMessage,message,cutoff});
+  const stopPruning = scheduleChatPrune(db, { clock: config.chatClock, interval: config.chatPruneInterval, onPruned() {
+    for (const key of new Set([...connections].map(stream => stream.owner))) emit(key, null, 'threads', { reason: 'retention' });
+  } });
+  function checkSendExpiry(threadId, storageKey) {
+    check(!db.prepare('SELECT 1 FROM chat_expired_sends WHERE key_hash=?').get(expiredSendHash(threadId, storageKey)) &&
+      !db.prepare("SELECT 1 FROM chat_messages WHERE thread_id=? AND request_key=? AND role='user' AND created_at<=?").get(threadId, storageKey, cutoff()),
+    '这条消息已超过服务器保留期。', 410, 'message_expired');
+  }
   function submittedMessages(threadId, storageKey, fingerprint) {
-    const rows = db.prepare('SELECT * FROM chat_messages WHERE thread_id=? AND request_key=? ORDER BY id').all(threadId, storageKey);
+    checkSendExpiry(threadId, storageKey);
+    const rows = db.prepare('SELECT * FROM chat_messages WHERE thread_id=? AND request_key=? AND created_at>? ORDER BY id').all(threadId, storageKey, cutoff());
     if (!rows.length) return null;
     const user = rows.find(row => row.role === 'user');
     check(user && JSON.parse(user.metadata).fingerprint === fingerprint, '重试标识已用于另一条消息。', 409, 'idempotency_conflict');
-    const replies = db.prepare('SELECT m.* FROM chat_ai_jobs j JOIN chat_messages m ON m.id=j.reply_id WHERE j.source_id=? ORDER BY m.id').all(user.id);
+    const replies = db.prepare('SELECT m.* FROM chat_ai_jobs j JOIN chat_messages m ON m.id=j.reply_id WHERE j.source_id=? AND m.created_at>? ORDER BY m.id').all(user.id, cutoff());
     return [...rows, ...replies];
   }
   async function syncNotices(session,req) {
@@ -82,7 +106,7 @@ export function createChat(db, config, json) {
           const text = question ? '庭院收到一封新来信。\n\n' + event.author + '：' + event.question
             : '庭院更新已同步。\n批次：' + event.batchId + '\n新增：' + (event.newItems.map((i) => i.title).join('、') || '无') + '\n更新：' + (event.updatedItems.map((i) => i.title).join('、') || '无');
           const metadata = { noticeEventId: event.id, ...(question ? { questions: [{ id: event.questionId, author: event.author, question: event.question }] } : { noticeBatchId: event.batchId }) };
-          const at = now(); const insert = db.prepare("INSERT INTO chat_messages (thread_id,role,sender_key,sender_name,body,status,metadata,request_key,created_at,updated_at) VALUES (?,'assistant','system','庭院来信',?,'complete',?,?,?,?) ON CONFLICT(thread_id,request_key,role) DO NOTHING")
+          const at = timestamp(); const insert = db.prepare("INSERT INTO chat_messages (thread_id,role,sender_key,sender_name,body,status,metadata,request_key,created_at,updated_at) VALUES (?,'assistant','system','庭院来信',?,'complete',?,?,?,?) ON CONFLICT(thread_id,request_key,role) DO NOTHING")
             .run(inbox, text, JSON.stringify(metadata), 'notice_' + event.id, at, at);
           if (insert.changes) created.push({ thread: inbox, id: Number(insert.lastInsertRowid) });
         }
@@ -100,8 +124,7 @@ export function createChat(db, config, json) {
     check(Array.isArray(ids) && ids.length <= 8 && new Set(ids).size === ids.length, '附件列表无效。');
     return ids.map((id) => {
       check(idPattern.test(id || ''), '附件 ID 无效。');
-      const item = db.prepare('SELECT m.id,m.name,m.mime,m.size,s.kind FROM media m JOIN staged_files s ON s.media_id=m.id WHERE m.id=? AND s.actor=?')
-        .get(id, 'chat:' + session.key);
+      const item = usableChatUpload(db, session.key, id, cutoff());
       check(item, '附件不存在或不属于当前账号。', 403, 'file_forbidden');
       return { ...item, url: '/chat-media/' + id };
     });
@@ -158,8 +181,9 @@ export function createChat(db, config, json) {
     runs.set(id, run);
     let finished = false;
     const update = (status = 'generating', error = null) => {
-      if (closing || !db.prepare('SELECT 1 FROM chat_messages WHERE id=?').get(id)) return;
-      const previous = JSON.parse(db.prepare('SELECT metadata FROM chat_messages WHERE id=?').get(id).metadata);
+      const row = !closing && db.prepare('SELECT metadata FROM chat_messages WHERE id=? AND created_at>?').get(id, cutoff());
+      if (!row) return;
+      const previous = JSON.parse(row.metadata);
       if (error) previous.error = error; else delete previous.error;
       db.prepare('UPDATE chat_messages SET body=?,status=?,metadata=?,updated_at=? WHERE id=?').run(run.text, status, JSON.stringify(previous), now(), id);
       publishMessage(session.key, thread, id);
@@ -167,7 +191,7 @@ export function createChat(db, config, json) {
     try {
       const settings = config.chat || {};
       check(settings.apiBase && settings.apiKey && settings.model, '尚未配置聊天模型。网站浏览与管理仍可使用，请由管理员配置 CHAT_AI_*。', 503, 'model_unconfigured');
-      const history = db.prepare("SELECT role,body,sender_name FROM chat_messages WHERE thread_id=? AND id<? AND (role='user' OR status='complete') ORDER BY id DESC LIMIT 30").all(thread, id).reverse();
+      const history = db.prepare("SELECT role,body,sender_name FROM chat_messages WHERE thread_id=? AND id<? AND created_at>? AND (role='user' OR status='complete') ORDER BY id DESC LIMIT 30").all(thread, id, cutoff()).reverse();
       const shared = db.prepare('SELECT kind FROM chat_threads WHERE id=?').get(thread)?.kind !== 'ai';
       let budget = 24_000;
       const contexts = [];
@@ -219,7 +243,7 @@ export function createChat(db, config, json) {
       try {
         requireAccount(db, stream.req);
         if (stream.res.writableLength > 128 * 1024) stream.res.destroy();
-        else { stream.res.write(': connected\n\n'); social.keepConnection(stream.id); }
+        else { stream.res.write('event: retention\ndata: ' + JSON.stringify({ retainedAfter: cutoff() }) + '\n\n'); social.keepConnection(stream.id); }
       } catch { stream.res.end(); }
     }
   }, 15_000); heartbeat.unref();
@@ -260,6 +284,9 @@ export function createChat(db, config, json) {
       check(available,'管理员已初始化，请正常登录。',409);const d=await readJson(req,4096);await config.initializeAdmin(d);social.ensureProfiles();json(res,{ok:true});return true;
     }
     const session = requireAccount(db, req);
+    if (path === '/api/chat/session/refresh' && method === 'POST') {
+      json(res, { ok: true }, 200, refreshAccount(db, req, session, config.secureCookie)); return true;
+    }
     if(await management(session,req,res,url,json))return true;
     if (await social.handle(session, req, res, url, json)) return true;
     if (await ai.handle(session, req, res, url, json)) return true;
@@ -275,22 +302,25 @@ export function createChat(db, config, json) {
     if (path === '/api/chat/events' && method === 'GET') {
       check(connections.size < 64 && [...connections].filter((s) => s.owner === session.key).length < 5, '实时连接较多，请关闭多余窗口后重试。', 503, 'stream_busy');
       res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders();
-      res.write('retry: 1500\nevent: ready\ndata: {}\n\n'); const stream = { id:newId(), res, req, owner: session.key }; connections.add(stream); social.openConnection(session.key,stream.id); res.once('close', () => {connections.delete(stream);social.closeConnection(stream.id);}); return true;
+      res.write('retry: 1500\nevent: ready\ndata: ' + JSON.stringify({ retainedAfter: cutoff() }) + '\n\n');
+      const stream = { id: newId(), res, req, owner: session.key, tokenHash: session.token_hash };
+      connections.add(stream); social.openConnection(session.key, stream.id);
+      res.once('close', () => { connections.delete(stream); social.closeConnection(stream.id); }); return true;
     }
     if (path === '/api/chat/session' && method === 'GET') {
       let profile = social.profile(session.key, session.key);
       if (!profile) { social.ensureProfiles(); profile = social.profile(session.key, session.key); }
-      json(res, { ...publicAccount(session), profile, assistantName: config.chat?.assistantName || '大肥鱼',
+      json(res, { ...publicAccount(session), profile, retainedAfter: cutoff(), renewable: Boolean(session.renew_until), assistantName: config.chat?.assistantName || '大肥鱼',
         astrbotConfigured: ai.configured, aiReady: ai.configured || Boolean(config.chat?.apiBase && config.chat?.apiKey && config.chat?.model) });
       return true;
     }
-    if (path === '/api/chat/logout' && method === 'POST') { json(res, { ok: true }, 200, { 'Set-Cookie': logoutAccount(db, req, config.secureCookie) }); for (const s of connections) if (s.owner === session.key) s.res.end(); return true; }
+    if (path === '/api/chat/logout' && method === 'POST') { json(res, { ok: true }, 200, { 'Set-Cookie': logoutAccount(db, req, config.secureCookie) }); for (const s of connections) if (s.tokenHash === session.token_hash) s.res.end(); return true; }
     if (path === '/api/chat/threads' && method === 'GET') {
       const offset = Number(url.searchParams.get('offset') || 0); check(Number.isSafeInteger(offset) && offset >= 0, '分页参数无效。');
       const limit = Number(url.searchParams.get('limit') || 50);
       check(Number.isInteger(limit) && limit >= 1 && limit <= 300, '会话分页大小无效。');
       const rows = db.prepare('SELECT t.* FROM chat_threads t JOIN chat_members m ON m.thread_id=t.id WHERE m.account_key=? AND m.hidden=0 ORDER BY t.updated_at DESC,t.id DESC LIMIT ? OFFSET ?').all(session.key, limit + 1, offset);
-      const totalUnread=db.prepare("SELECT count(*) AS n FROM chat_messages msg JOIN chat_members m ON m.thread_id=msg.thread_id WHERE m.account_key=? AND m.hidden=0 AND msg.sender_key!=? AND msg.status='complete' AND NOT EXISTS(SELECT 1 FROM chat_message_reads r WHERE r.account_key=? AND r.message_id=msg.id)").get(session.key,session.key,session.key).n;
+      const totalUnread=db.prepare("SELECT count(*) AS n FROM chat_messages msg JOIN chat_members m ON m.thread_id=msg.thread_id WHERE m.account_key=? AND m.hidden=0 AND msg.created_at>? AND msg.sender_key!=? AND msg.status='complete' AND NOT EXISTS(SELECT 1 FROM chat_message_reads r WHERE r.account_key=? AND r.message_id=msg.id)").get(session.key,cutoff(),session.key,session.key).n;
       json(res, { items: rows.slice(0, limit).map((r) => threadView(r, session)), totalUnread, nextOffset: rows.length > limit ? offset + limit : null }); return true;
     }
     if (path === '/api/chat/threads' && method === 'POST') {
@@ -326,25 +356,53 @@ export function createChat(db, config, json) {
         item = threadView(own(session, id), session); db.prepare('INSERT INTO idempotency VALUES (?,?,?,?)').run(scope, key, fingerprint, JSON.stringify(item));
       }); emit(null, item.id, 'threads', {}); json(res, { item }, 201); return true;
     }
-    const threadRoute = /^\/api\/chat\/threads\/([0-9a-f-]{36})(?:\/(messages|members|read|stop|retry))?$/.exec(path);
+    const threadRoute = /^\/api\/chat\/threads\/([0-9a-f-]{36})(?:\/(messages|members|read|stop|retry|sync|search))?$/.exec(path);
     if (threadRoute) {
       const [, id, action] = threadRoute; const thread = own(session, id);
+      if (action === 'sync' && method === 'GET') {
+        const from = Number(url.searchParams.get('cursor') || 0);
+        check(Number.isSafeInteger(from) && from >= 0, '同步游标无效。');
+        const since = cutoff(), high = cursor();
+        if (from > high) { json(res, { reset: true, retainedAfter: since }); return true; }
+        const rows = db.prepare(`SELECT m.*,c.seq AS sync_revision FROM chat_message_changes c JOIN chat_messages m ON m.id=c.message_id
+          WHERE c.thread_id=? AND c.seq>? AND m.created_at>? ORDER BY c.seq LIMIT 61`).all(id, from, since);
+        const more = rows.length > 60;
+        json(res, { item: { ...threadView(thread, session), members: members(id) }, messages: rows.slice(0, 60).map(message),
+          cursor: more ? rows[59].sync_revision : high, hasMore: more, retainedAfter: since });
+        return true;
+      }
+      if (action === 'search' && method === 'GET') {
+        const query = cleanText(url.searchParams.get('q'), '搜索词', 120, true);
+        const before = Number(url.searchParams.get('before') || Number.MAX_SAFE_INTEGER);
+        check(Number.isSafeInteger(before) && before > 0, '分页参数无效。');
+        const since = cutoff();
+        const rows = db.prepare(`SELECT * FROM chat_messages WHERE thread_id=? AND id<? AND created_at>?
+          AND instr(lower(body),lower(?))>0 ORDER BY id DESC LIMIT 61`).all(id, before, since, query);
+        json(res, { messages: rows.slice(0, 60).map(message), before: rows.length > 60 ? rows[59].id : null, retainedAfter: since });
+        return true;
+      }
       if (!action && method === 'GET') {
+        const since = cutoff();
         const item = { ...threadView(thread, session), members: members(id) };
         if (url.searchParams.has('after')) {
           const after = Number(url.searchParams.get('after'));
           check(Number.isSafeInteger(after) && after >= 0 && !url.searchParams.has('before'), '分页参数无效。');
-          const rows = db.prepare('SELECT * FROM chat_messages WHERE thread_id=? AND id>? ORDER BY id LIMIT 61').all(id, after);
-          json(res, { item, messages: rows.slice(0, 60).map(message), nextAfter: rows.length > 60 ? rows[59].id : null });
+          const rows = db.prepare('SELECT * FROM chat_messages WHERE thread_id=? AND id>? AND created_at>? ORDER BY id LIMIT 61').all(id, after, since);
+          json(res, { item, messages: rows.slice(0, 60).map(message), nextAfter: rows.length > 60 ? rows[59].id : null, retainedAfter: since });
           return true;
         }
         const before = Number(url.searchParams.get('before') || Number.MAX_SAFE_INTEGER); check(Number.isSafeInteger(before) && before > 0, '分页参数无效。');
-        const rows = db.prepare('SELECT * FROM chat_messages WHERE thread_id=? AND id<? ORDER BY id DESC LIMIT 61').all(id, before);
-        json(res, { item, messages: rows.slice(0, 60).reverse().map(message), before: rows.length > 60 ? rows[59].id : null }); return true;
+        const rows = db.prepare('SELECT * FROM chat_messages WHERE thread_id=? AND id<? AND created_at>? ORDER BY id DESC LIMIT 61').all(id, before, since);
+        json(res, { item, messages: rows.slice(0, 60).reverse().map(message), before: rows.length > 60 ? rows[59].id : null, syncCursor: cursor(), retainedAfter: since }); return true;
       }
       if (!action && method === 'PATCH') {
         check(thread.kind !== 'direct' && thread.owner === session.key, '只有创建者可修改这段对话的名称。', 403, 'owner_required');
-        const data = await readJson(req, 4096); db.prepare('UPDATE chat_threads SET title=?,updated_at=? WHERE id=?').run(cleanText(data.title, '对话标题', 80, true), now(), id); emit(null, id, 'threads', {}); json(res, { item: threadView(own(session, id), session) }); return true;
+        const data = await readJson(req, 4096);
+        transaction(db, () => {
+          db.prepare('UPDATE chat_threads SET title=?,updated_at=? WHERE id=?').run(cleanText(data.title, '对话标题', 80, true), now(), id);
+          db.prepare('DELETE FROM chat_generated_titles WHERE thread_id=?').run(id);
+        });
+        emit(null, id, 'threads', {}); json(res, { item: threadView(own(session, id), session) }); return true;
       }
       if (!action && method === 'DELETE') {
         if (thread.kind === 'direct') db.prepare('UPDATE chat_members SET hidden=1 WHERE thread_id=? AND account_key=?').run(id, session.key);
@@ -366,8 +424,9 @@ export function createChat(db, config, json) {
         const through = Number(url.searchParams.get('through') ?? Number.MAX_SAFE_INTEGER);
         check(Number.isSafeInteger(through) && through >= 0, '已读位置无效。');
         const changes = transaction(db, () => {
-          const result = db.prepare("INSERT INTO chat_message_reads SELECT ?,id FROM chat_messages WHERE thread_id=? AND id<=? AND status='complete' AND sender_key!=? ON CONFLICT DO NOTHING").run(session.key, id, through, session.key);
-          if (result.changes) db.prepare('UPDATE chat_members SET last_read_id=max(last_read_id,(SELECT coalesce(max(id),0) FROM chat_messages WHERE thread_id=? AND id<=?)) WHERE thread_id=? AND account_key=?').run(id, through, id, session.key);
+          const since = cutoff();
+          const result = db.prepare("INSERT INTO chat_message_reads SELECT ?,id FROM chat_messages WHERE thread_id=? AND id<=? AND created_at>? AND status='complete' AND sender_key!=? ON CONFLICT DO NOTHING").run(session.key, id, through, since, session.key);
+          if (result.changes) db.prepare('UPDATE chat_members SET last_read_id=max(last_read_id,(SELECT coalesce(max(id),0) FROM chat_messages WHERE thread_id=? AND id<=? AND created_at>?)) WHERE thread_id=? AND account_key=?').run(id, through, since, id, session.key);
           return result.changes;
         });
         if (changes) emit(session.key, null, 'read', { id });
@@ -375,7 +434,7 @@ export function createChat(db, config, json) {
       }
       if (action === 'stop' && method === 'POST') {ai.stop(session,id); for (const run of runs.values()) if (run.thread === id && run.owner === session.key) run.controller.abort(); json(res, { ok: true }); return true; }
       if (action === 'retry' && method === 'POST') {
-        const data = await readJson(req, 4096), row = db.prepare('SELECT * FROM chat_messages WHERE id=? AND thread_id=? AND role=?').get(Number(data.messageId), id, 'assistant');
+        const data = await readJson(req, 4096), row = db.prepare('SELECT * FROM chat_messages WHERE id=? AND thread_id=? AND role=? AND created_at>?').get(Number(data.messageId), id, 'assistant', cutoff());
         if(row&&ai.retry(session,row.id)){json(res,{ok:true});return true;}
         check(row && ['failed', 'stopped'].includes(row.status), '这条回复当前不能重试。', 409, 'retry_unavailable');
         check(JSON.parse(row.metadata).requestedBy === session.key, '只能重试由自己发起的回复。', 403, 'message_forbidden');
@@ -388,6 +447,7 @@ export function createChat(db, config, json) {
         const data = await readJson(req, 64 * 1024), key = requestKey(req); const text = cleanText(data.text, '消息', 8000, true);
         own(requireAccount(db, req), id);
         const storageKey = session.key + ':' + key;
+        checkSendExpiry(id, storageKey);
         check(data.mentionAssistant == null || typeof data.mentionAssistant === 'boolean', '@助理选项无效。');
         const files = attachments(session, data.attachmentIds || []); const fingerprint = sha256(JSON.stringify([text, files.map((f) => f.id), data.mentionAssistant === true]));
         if (thread.kind !== 'ai' && /^\/(?:月站\s+)?(?:待办|草稿|回复|发布|同步|音乐|游戏)(?:\s|$)/.test(text)) {
@@ -417,12 +477,15 @@ export function createChat(db, config, json) {
           }
           consumeQuota(db, 'chat-message:' + session.key, 60, 60_000);
           if (needsAssistant) { consumeQuota(db, 'chat:' + session.key, 20, 60_000); consumeQuota(db, 'chat-day:' + session.key, session.role === 'admin' ? 1000 : 200, 86400_000); }
-          const at = now(); const insert = db.prepare('INSERT INTO chat_messages (thread_id,role,sender_key,sender_name,body,status,metadata,request_key,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)');
+          if (files.length) attachments(session, files.map(file => file.id));
+          const at = timestamp(); const insert = db.prepare('INSERT INTO chat_messages (thread_id,role,sender_key,sender_name,body,status,metadata,request_key,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)');
           const inserted=insert.run(id, 'user', session.key, session.username, text, 'complete', JSON.stringify({ attachments: files, fingerprint }), storageKey, at, at);
           const sourceRow=db.prepare('SELECT * FROM chat_messages WHERE id=?').get(Number(inserted.lastInsertRowid));ai.remember(sourceRow);
           if(selectedAgents.length)ai.queue(session,current,sourceRow,selectedAgents);
           else if (needsAssistant) assistantId = Number(insert.run(id, 'assistant', 'assistant', config.chat?.assistantName || '大肥鱼', result?.body || '', result ? 'complete' : 'generating', JSON.stringify({ ...result?.metadata, requestedBy: session.key }), storageKey, at, at).lastInsertRowid);
-          db.prepare('UPDATE chat_threads SET title=?,updated_at=? WHERE id=?').run(current.kind === 'ai' && current.title === '新的夜话' ? text.replace(/^\//, '').slice(0, 28) : current.title, at, id);
+          const generateTitle = current.kind === 'ai' && current.title === '新的夜话' && text;
+          db.prepare('UPDATE chat_threads SET title=?,updated_at=? WHERE id=?').run(generateTitle ? text.replace(/^\//, '').slice(0, 28) : current.title, at, id);
+          if (generateTitle) db.prepare('INSERT INTO chat_generated_titles VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET message_id=excluded.message_id').run(id, sourceRow.id);
           db.prepare('UPDATE chat_members SET hidden=0 WHERE thread_id=?').run(id);
           rows = submittedMessages(id, storageKey, fingerprint);
           created = true;
@@ -438,7 +501,7 @@ export function createChat(db, config, json) {
     throw new Problem(404, 'not_found', '找不到聊天接口。');
   }
   return { handle, close() {
-    closing = true; clearInterval(heartbeat); social.close();ai.close();
+    closing = true; stopPruning(); clearInterval(heartbeat); social.close();ai.close();
     for (const run of runs.values()) { clearTimeout(run.timer); db.prepare("UPDATE chat_messages SET body=?,status='stopped',updated_at=? WHERE id=?").run(run.text, now(), run.id); run.controller.abort(); }
     for (const stream of connections) stream.res.end(); connections.clear();
   } };

@@ -67,3 +67,6 @@
 .reduce-motion.chat-body *,.reduce-motion .chat-body *{animation-duration:.001ms!important;transition-duration:.001ms!important;scroll-behavior:auto!important}.page-hidden .typing-dots i{animation-play-state:paused}
 .reduce-motion .app-boot{display:none}
 .app-image-viewport{display:block}.app-image-viewport img{margin:auto}
+.app-login-remember{display:flex;align-items:center;gap:10px;min-height:44px;color:#e0d3e7;cursor:pointer;font-size:14px}
+.app-login-form .app-login-remember input{width:18px;height:18px;margin:0;padding:0;accent-color:#e4bdd8;cursor:pointer}
+.app-login-form .app-login-retry{width:100%;margin-top:8px}

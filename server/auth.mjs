@@ -5,6 +5,10 @@ import { check, consumeQuota, newId, now, Problem, sha256, transaction } from '.
 const derive = promisify(scrypt);
 const passwordOptions = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const sessionAge = 8 * 60 * 60;
+const chatRenewal = {
+  member: { age: 30 * 86400, max: 90 * 86400 },
+  admin: { age: 86400, max: 7 * 86400 },
+};
 const cookieName = 'moonlit_session';
 const chatCookieName = 'moonlit_chat_session';
 const usernamePattern = /^[a-zA-Z0-9_.-]{2,40}$/;
@@ -18,7 +22,15 @@ function equals(left, right) {
 }
 
 function sessionCookie(token, maxAge, secure, name = cookieName) {
-  return `${name}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+  return `${name}=${token}; Path=/; HttpOnly; SameSite=Strict${maxAge === null ? '' : '; Max-Age=' + maxAge}${secure ? '; Secure' : ''}`;
+}
+
+function chatSessionTimes(remember, role) {
+  const time = Date.now();
+  const policy = chatRenewal[role];
+  return { expires: time + (remember ? policy.age : sessionAge) * 1000,
+    until: remember ? time + policy.max * 1000 : null,
+    cookieAge: remember ? policy.age : null };
 }
 
 export async function setAdmin(db, username, password) {
@@ -35,7 +47,7 @@ export async function setAdmin(db, username, password) {
   });
 }
 
-export async function login(db, { username, password }, ip, secure) {
+export async function login(db, { username, password }, ip, secure, chatRemember) {
   const bucket = `login:${sha256(ip)}`;
   transaction(db, () => consumeQuota(db, bucket, 8, 15 * 60 * 1000));
   const failed = () => new Problem(401, 'invalid_credentials', '账号或密码不正确。');
@@ -46,26 +58,32 @@ export async function login(db, { username, password }, ip, secure) {
   if (!user || !timingSafeEqual(hash, Buffer.from(user.hash, 'hex'))) throw failed();
   const token = secret();
   const csrf = secret();
+  const times = chatRemember === undefined ? { expires: Date.now() + sessionAge * 1000, until: null, cookieAge: sessionAge }
+    : chatSessionTimes(chatRemember, 'admin');
   transaction(db, () => {
     // If the password changed during scrypt, the old credential must not get a new session.
     check(db.prepare('SELECT hash FROM admins WHERE id = ?').get(user.id)?.hash === user.hash,
       '账号凭据已更新，请重新登录。', 401, 'invalid_credentials');
     db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now());
-    db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?)').run(sha256(token), user.id, csrf, Date.now() + sessionAge * 1000);
+    db.prepare('INSERT INTO sessions(token_hash,admin_id,csrf,expires_at,renew_until) VALUES (?,?,?,?,?)').run(sha256(token), user.id, csrf, times.expires, times.until);
     db.prepare('DELETE FROM rate_limits WHERE bucket = ?').run(bucket);
   });
-  return { data: { username: user.username, csrf }, cookie: sessionCookie(token, sessionAge, secure) };
+  return { data: { username: user.username, csrf }, cookie: sessionCookie(token, times.cookieAge, secure) };
 }
 
-function findSession(db, req, member = false) {
+function sessionCredential(req, member) {
   const name = member ? chatCookieName : req.chatAdminCookieName || cookieName;
   const entries=(req.headers.cookie || '').split(';').map(value=>value.trim());
   const cookie = entries.find((value) => value.startsWith(`${name}=`)) || (!member&&req.chatAdminCookieName?entries.find(value=>value.startsWith(cookieName+'=')):null);
-  const token = cookie?.slice(cookie.indexOf('=')+1);
+  return { token: cookie?.slice(cookie.indexOf('=') + 1), name: cookie?.slice(0, cookie.indexOf('=')) || name };
+}
+
+function findSession(db, req, member = false) {
+  const { token } = sessionCredential(req, member);
   return token && /^[A-Za-z0-9_-]{43}$/.test(token) && db.prepare(member
-    ? `SELECT a.id, a.username, s.csrf, s.token_hash FROM chat_sessions s JOIN chat_accounts a ON a.id=s.account_id
+    ? `SELECT a.id, a.username, s.csrf, s.token_hash, s.expires_at, s.renew_until FROM chat_sessions s JOIN chat_accounts a ON a.id=s.account_id
        WHERE s.token_hash=? AND s.expires_at>? AND a.disabled=0`
-    : `SELECT a.id, a.username, s.csrf, s.token_hash FROM sessions s JOIN admins a ON a.id=s.admin_id
+    : `SELECT a.id, a.username, s.csrf, s.token_hash, s.expires_at, s.renew_until FROM sessions s JOIN admins a ON a.id=s.admin_id
        WHERE s.token_hash=? AND s.expires_at>?`)
     .get(sha256(token), Date.now());
 }
@@ -92,9 +110,10 @@ export function requireAccount(db, req) {
 }
 
 export async function loginAccount(db, credentials, ip, secure, adminCookieName = cookieName) {
-  const { username, password } = credentials;
+  const { username, password, remember } = credentials;
+  check(remember === undefined || typeof remember === 'boolean', '登录选项无效。');
   if (typeof username === 'string' && db.prepare('SELECT id FROM admins WHERE username=?').get(username)) {
-    const result = await login(db, credentials, ip, secure);
+    const result = await login(db, credentials, ip, secure, remember);
     return { data: { ...result.data, role: 'admin' }, cookies: [result.cookie.replace(cookieName+'=',adminCookieName+'='), sessionCookie('', 0, secure, chatCookieName)] };
   }
   const bucket = `login:${sha256(ip)}`;
@@ -105,15 +124,30 @@ export async function loginAccount(db, credentials, ip, secure, adminCookieName 
   const hash = await derive(password, Buffer.from(user?.salt || '00'.repeat(24), 'hex'), 64, passwordOptions);
   if (!user || user.disabled || !timingSafeEqual(hash, Buffer.from(user.hash, 'hex'))) throw failed();
   const token = secret(), csrf = secret();
+  const times = chatSessionTimes(remember, 'member');
   transaction(db, () => {
     const current = db.prepare('SELECT hash, disabled FROM chat_accounts WHERE id=?').get(user.id);
     check(current?.hash === user.hash && !current.disabled, '账号凭据已更新，请重新登录。', 401, 'invalid_credentials');
     db.prepare('DELETE FROM chat_sessions WHERE expires_at<=?').run(Date.now());
-    db.prepare('INSERT INTO chat_sessions VALUES (?,?,?,?)').run(sha256(token), user.id, csrf, Date.now() + sessionAge * 1000);
+    db.prepare('INSERT INTO chat_sessions(token_hash,account_id,csrf,expires_at,renew_until) VALUES (?,?,?,?,?)').run(sha256(token), user.id, csrf, times.expires, times.until);
     db.prepare('DELETE FROM rate_limits WHERE bucket=?').run(bucket);
   });
   return { data: { username: user.username, role: 'member', csrf },
-    cookies: [sessionCookie(token, sessionAge, secure, chatCookieName), sessionCookie('', 0, secure,adminCookieName),...(adminCookieName!==cookieName?[sessionCookie('',0,secure)]:[])] };
+    cookies: [sessionCookie(token, remember === undefined ? sessionAge : times.cookieAge, secure, chatCookieName), sessionCookie('', 0, secure,adminCookieName),...(adminCookieName!==cookieName?[sessionCookie('',0,secure)]:[])] };
+}
+
+export function refreshAccount(db, req, session, secure) {
+  if (!session.renew_until) return {};
+  const time = Date.now();
+  const target = Math.min(time + chatRenewal[session.role].age * 1000, session.renew_until);
+  // Amortize refresh writes while preserving the same credential for open SSE connections.
+  if (target - session.expires_at < 60 * 60 * 1000) return {};
+  const member = session.role === 'member';
+  const { token, name } = sessionCredential(req, member);
+  const table = member ? 'chat_sessions' : 'sessions';
+  const updated = db.prepare(`UPDATE ${table} SET expires_at=? WHERE token_hash=? AND expires_at>?`).run(target, session.token_hash, time);
+  check(updated.changes, '请先登录聊天应用。', 401, 'login_required');
+  return { 'Set-Cookie': sessionCookie(token, Math.floor((target - time) / 1000), secure, name) };
 }
 
 export function logoutAccount(db, req, secure) {

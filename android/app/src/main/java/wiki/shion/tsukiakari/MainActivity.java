@@ -8,18 +8,13 @@ import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
 import android.content.res.Configuration;
 import android.graphics.Color;
-import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.text.InputType;
-import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
-import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.MimeTypeMap;
 import android.webkit.URLUtil;
@@ -31,13 +26,7 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.Button;
-import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.TextView;
 import android.window.OnBackInvokedDispatcher;
 import org.json.JSONObject;
 import java.io.ByteArrayInputStream;
@@ -54,7 +43,7 @@ import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
     private static final int FILE = 41, SAVE = 42, NOTICES = 43;
-    private static final int NIGHT = Color.rgb(16, 18, 31), LIGHT = Color.rgb(245, 232, 246), MUTED = Color.rgb(190, 178, 204);
+    private static final int NIGHT = Color.rgb(16, 18, 31);
     private static final String POLICY = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; worker-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
     private final ExecutorService files = Executors.newSingleThreadExecutor();
     private Device device;
@@ -71,7 +60,12 @@ public final class MainActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         device = new Device(this);
-        origin = Endpoint.validate(device.origin(), BuildConfig.DEBUG);
+        origin = device.origin();
+        boolean changedOrigin = device.resetForNewOrigin();
+        if (changedOrigin) {
+            stopService(new Intent(this, MessageService.class));
+            Notice.clear(this);
+        }
         getWindow().setStatusBarColor(NIGHT);
         getWindow().setNavigationBarColor(NIGHT);
         root = new FrameLayout(this);
@@ -90,7 +84,7 @@ public final class MainActivity extends Activity {
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true);
         capture(getIntent());
         if (state != null && state.getBoolean("farewell")) farewell = true;
-        if (state != null && Endpoint.thread(state.getString("nextThread"))) {
+        if (!changedOrigin && state != null && Endpoint.thread(state.getString("nextThread"))) {
             nextThread = state.getString("nextThread"); nextAccount = state.getString("nextAccount");
         }
         ShortcutManager shortcuts = getSystemService(ShortcutManager.class);
@@ -99,7 +93,7 @@ public final class MainActivity extends Activity {
             .setIcon(Icon.createWithResource(this, R.drawable.brand_art))
             .setIntent(new Intent(Intent.ACTION_VIEW, Uri.parse("tsukiakari://farewell"), this, MainActivity.class)).build();
         try { shortcuts.setDynamicShortcuts(Collections.singletonList(night)); } catch (RuntimeException ignored) {}
-        if (origin == null) showConnection(); else showChat();
+        showChat();
     }
 
     @Override protected void onSaveInstanceState(Bundle state) {
@@ -165,102 +159,6 @@ public final class MainActivity extends Activity {
         web.evaluateJavascript("Boolean(window.tsukiakariAndroidBack?.())", consumed -> {
             if (!"true".equals(consumed)) moveTaskToBack(true);
         });
-    }
-
-    private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
-
-    private GradientDrawable panel(int color, int radius) {
-        GradientDrawable surface = new GradientDrawable();
-        surface.setColor(color);
-        surface.setCornerRadius(dp(radius));
-        return surface;
-    }
-
-    private TextView copy(String value, int size, int color) {
-        TextView text = new TextView(this);
-        text.setText(value); text.setTextSize(size); text.setTextColor(color);
-        text.setLineSpacing(dp(3), 1);
-        return text;
-    }
-
-    private void showConnection() {
-        ScrollView screen = new ScrollView(this);
-        screen.setFillViewport(true);
-        FrameLayout surround = new FrameLayout(this);
-        FrameLayout.LayoutParams fit = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
-        LinearLayout card = new LinearLayout(this) {
-            @Override protected void onMeasure(int w, int h) {
-                super.onMeasure(View.MeasureSpec.makeMeasureSpec(Math.min(View.MeasureSpec.getSize(w), dp(480)), View.MeasureSpec.EXACTLY), h);
-            }
-        };
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(26), dp(32), dp(26), dp(32));
-        ImageView brand = new ImageView(this);
-        brand.setImageResource(R.drawable.brand_art);
-        brand.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        card.addView(brand, new LinearLayout.LayoutParams(dp(68), dp(68)));
-        TextView title = copy("月明かり", 28, LIGHT); title.setTypeface(Typeface.SERIF, Typeface.NORMAL);
-        title.setPadding(0, dp(18), 0, dp(14)); card.addView(title);
-        card.addView(copy("连接你的聊天服务", 21, LIGHT));
-        TextView intro = copy("连接后，使用与桌面端相同的账号登录。", 16, MUTED);
-        intro.setPadding(0, dp(8), 0, dp(17)); card.addView(intro);
-        EditText address = new EditText(this);
-        address.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        address.setSingleLine(true); address.setTextSize(16); address.setTextColor(LIGHT);
-        address.setHintTextColor(MUTED); address.setHint("https://chat.example.org");
-        address.setContentDescription("聊天服务地址"); address.setText(origin == null ? "" : origin);
-        address.setPadding(dp(15), dp(9), dp(15), dp(9)); address.setMinHeight(dp(54));
-        address.setBackground(panel(Color.rgb(36, 35, 54), 12)); card.addView(address);
-        TextView status = copy("", 14, MUTED); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        status.setPadding(0, dp(7), 0, dp(12)); card.addView(status);
-        Button apply = new Button(this);
-        apply.setText("继续登录"); apply.setAllCaps(false); apply.setTextColor(Color.rgb(39, 25, 49));
-        apply.setBackground(panel(Color.rgb(229, 191, 216), 13)); apply.setMinimumHeight(dp(52));
-        apply.setOnClickListener(v -> {
-            String chosen = Endpoint.validate(address.getText().toString(), BuildConfig.DEBUG);
-            if (chosen == null) {
-                status.setText(BuildConfig.DEBUG ? "填写 HTTPS 服务地址。调试版也支持经 ADB 转发的本机 HTTP。" : "填写 HTTPS 服务根地址，地址中请勿加入账号或路径。");
-                return;
-            }
-            getSystemService(InputMethodManager.class).hideSoftInputFromWindow(address.getWindowToken(), 0);
-            apply.setEnabled(false); address.setEnabled(false);
-            status.setText("正在检查聊天服务…");
-            files.submit(() -> {
-                String issue = connectionIssue(chosen);
-                runOnUiThread(() -> {
-                    if (isFinishing() || !screen.isAttachedToWindow()) return;
-                    apply.setEnabled(true); address.setEnabled(true);
-                    if (issue != null) { status.setText(issue); return; }
-                    if (!chosen.equals(origin)) {
-                        stopService(new Intent(this, MessageService.class));
-                        Notice.clear(this);
-                        device.connectedTo(chosen); origin = chosen; account = "";
-                        nextAccount = nextThread = null;
-                    }
-                    showChat();
-                });
-            });
-        });
-        card.addView(apply, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)));
-        if (origin != null) {
-            Button cancel = new Button(this); cancel.setText("返回登录"); cancel.setAllCaps(false);
-            cancel.setOnClickListener(v -> showChat()); card.addView(cancel);
-        }
-        surround.addView(card, fit); screen.addView(surround);
-        root.removeAllViews(); root.addView(screen);
-    }
-
-    private static String connectionIssue(String chosen) {
-        try {
-            HttpURLConnection request = Endpoint.request(chosen, "/api/chat/session", false);
-            try {
-                int code = request.getResponseCode();
-                String mime = request.getContentType();
-                if ((code == 200 || code == 401) && mime != null && mime.startsWith("application/json")) return null;
-                if (code == 404 || code == 200 || code == 401) return "此地址没有月明かり聊天接口。请填写聊天服务的根地址。";
-            } finally { request.disconnect(); }
-        } catch (IOException unavailable) { /* Explain connection errors without exposing addresses or cookies. */ }
-        return "暂时连不上聊天服务，请检查地址、网络和 HTTPS 证书。";
     }
 
     private WebResourceResponse asset(WebResourceRequest request) {
@@ -387,7 +285,7 @@ public final class MainActivity extends Activity {
                 account = ""; device.owner(""); Notice.clear(this);
                 stopService(new Intent(this, MessageService.class)); CookieManager.getInstance().flush();
             }
-            case "connection" -> { disposeWeb(); showConnection(); }
+            case "sessionRefreshed" -> CookieManager.getInstance().flush();
             default -> { if (!account.isEmpty()) authenticated(input); }
         }
     }

@@ -12,7 +12,7 @@ const fixture = await androidFixture(output);
 let browser, page;
 const pass = text => { report.checks.push(text); console.log('通过 · ' + text); };
 
-async function account(context, credentials) {
+async function account(context, credentials, testConnection = false) {
   if (bundledWeb) {
     await context.route(fixture.origin + '/**', async route => {
       const name = new URL(route.request().url()).pathname.replace(/^\/chat$/, '/chat.html');
@@ -42,7 +42,21 @@ async function account(context, credentials) {
   });
   const active = await context.newPage();
   active.setDefaultTimeout(18000);
+  const sessionPath = '**/api/chat/session';
+  if (testConnection) await active.route(sessionPath, route => route.fulfill({ status: 503, json: {} }));
   await active.goto(fixture.origin + '/chat');
+  if (testConnection) {
+    await active.getByRole('heading', { name: '登录月明かり' }).waitFor();
+    const retry = active.getByRole('button', { name: '重试连接' });
+    await retry.waitFor();
+    assert.equal(await active.getByText('连接你的聊天服务').count(), 0);
+    assert.equal(await active.getByRole('textbox', { name: '聊天服务地址' }).count(), 0);
+    assert.equal(await active.getByRole('checkbox', { name: '记住登录状态' }).isChecked(), true);
+    await active.screenshot({ path: join(output, 'login-retry.png') });
+    await active.unroute(sessionPath);
+    await retry.click(); await retry.waitFor({ state: 'hidden' });
+    pass('首次直接显示账号密码页，服务暂不可用时留在登录页重试');
+  }
   await active.getByRole('textbox', { name: '账号', exact: true }).fill(credentials.username);
   await active.getByLabel('密码', { exact: true }).fill(credentials.password);
   await active.getByRole('button', { name: '登录', exact: true }).click();
@@ -54,9 +68,9 @@ async function account(context, credentials) {
 
 try {
   browser = await chromium.launch({ headless: true, executablePath: process.env.TSUKIAKARI_QA_BROWSER || undefined });
-  const context = await browser.newContext({ viewport: { width: 390, height: 820 }, userAgent: 'Chromium TsukiakariAndroid/0.1.0',
+  const context = await browser.newContext({ viewport: { width: 390, height: 820 }, userAgent: 'Chromium TsukiakariAndroid/0.1.1',
     isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
-  page = await account(context, fixture.member);
+  page = await account(context, fixture.member, true);
   const contacts = page.locator('#contacts-dialog');
   const nav = page.getByRole('navigation', { name: '应用功能' });
   const pick = exact => page.locator('.conversation-filters').getByRole('button', { name: exact, exact: true });

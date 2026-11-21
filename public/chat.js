@@ -25,6 +25,7 @@ let threadPage = null, threadLimit = 50, before = null, loadingOlder = false, th
 let routeVersion = 0, accountVersion = 0, refreshTimer, activeTimer, readTimer, scrollFrame, adminModule, adminOwner, olderRequest;
 let connectionState = 'connecting', reconnectTimer, reconnectDelay = 1000, sessionRefresh, foregroundRequest, threadRefresh;
 let pendingThreadId, activeSendTicket;
+let loginAttempt = 0, lastRenewAttempt = 0, timelineCursor = null, retentionCutoff = '', oldestMessageDate = '';
 let messageFrame, readPending = false, catchingUp = false, newWhileReading = 0;
 let nativeHidden = false;
 const messageNodes = new Map(), messageOrder = [], pendingMessages = new Map(), inputDrafts = new Map(), generating = new Set();
@@ -58,7 +59,8 @@ async function request(path, options = {}) {
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 && result.error?.code === 'login_required' && !path.endsWith('/login') && session && version === accountVersion) showLogin();
-    const error = new Error(result.error?.message || '服务暂未完成请求，请重试。');
+    const missing = path.startsWith('/api/chat/') && (response.status === 404 && !session || [502, 503, 504].includes(response.status));
+    const error = new Error(result.error?.message && !missing ? result.error.message : missing ? '聊天服务暂未就绪，请稍后重试。' : '服务暂未完成请求，请重试。');
     error.status = response.status;
     error.code = result.error?.code;
     throw error;
@@ -73,7 +75,7 @@ const socialUI=createSocialUI({request,account:()=>session,dialog,openModal,open
  uploadAvatar:(file,key,onProgress)=>xhrUpload({file,kind:'image'},key,onProgress,session)});
 
 const android = androidClient({ account: () => session, request, navigate, contacts: () => socialUI.contacts.open(), modal: openModal, confirm: confirmModal,
-  active: () => activeThread, visibility: hidden => { nativeHidden = hidden; onVisibilityChanged(); }, refreshRead: markRead, logout: confirmLogout });
+  active: () => activeThread, visibility: hidden => { nativeHidden = hidden; onVisibilityChanged(); }, refreshRead: markRead, logout: confirmLogout, reconnect: openChatEvents });
 const pages=createPages({request,account:()=>session,navigate,social:()=>socialUI,showAccounts,openModal,connection:()=>connectionState,androidPage:android?.page});
 function openPage(section,title,...children){if(dialog.open)dialog.close();details.hidden=true;return navigate(['personas'].includes(section)?'software':'settings',{section,surface:{title,children}});}
 function openDetails(title,...children){const close=iconButton('close','关闭会话详情');close.onclick=()=>details.hidden=true;details.replaceChildren(el('header',{class:'details-heading'},el('h2',{},title),close),...children.flat(Infinity).filter(v=>v!==false&&v!=null));details.hidden=false;close.focus();}
@@ -105,9 +107,12 @@ function confirmLogout() {
   });
 }
 
-function showLogin(explicit = false) {
+function showLogin(explicit = false, problem = null, probe = false) {
+  const leaving = Boolean(session) || explicit;
+  loginAttempt++; lastRenewAttempt = 0; retentionCutoff = '';
   accountVersion++; routeVersion++;
-  android?.logout(explicit === true);
+  if (leaving || problem?.status === 401) android?.logout(explicit === true);
+  if (leaving && android) history.replaceState(null, '', '/chat');
   foregroundRequest?.abort(); threadRefresh?.controller.abort(); activeSendTicket?.controller.abort();
   threadRefresh = sessionRefresh = threadListRequest = null; refreshListAgain = false;
   for (const timer of [refreshTimer, activeTimer, readTimer, reconnectTimer]) clearTimeout(timer);
@@ -127,30 +132,47 @@ function showLogin(explicit = false) {
   document.querySelector('#manage-main').replaceChildren(); adminOwner = null; library.reset();
   const username = el('input', { name: 'username', autocomplete: 'username', required: true, maxlength: 40, placeholder: '你的账号', 'aria-label': '账号' });
   const password = el('input', { type: 'password', name: 'password', autocomplete: 'current-password', required: true, maxlength: 128, placeholder: '账号密码', 'aria-label': '密码' });
+  const remember = el('input', { type: 'checkbox', name: 'remember', checked: true });
   const submit = action('登录', 'lock', { type: 'submit', class: 'button button-primary' });
   const status = el('p', { class: 'inline-status', role: 'status' });
-  const form = el('form', { class: 'app-login-form' }, appBrand(), el('h1', {}, '今夜，也在这里相见。'), el('p', {}, '登录后，回到属于你的聊天与收藏。'),
-    el('label', { class: 'field' }, el('span', {}, '账号'), username), el('label', { class: 'field' }, el('span', {}, '密码'), password), submit, status,
-    el('div', { class: 'app-login-note' }, '普通账号由站长开通 · 管理员使用现有网站账号', el('br'),
-      android ? android.loginAction() : el('a', { href: '/' }, '逛逛詩音の月光庭院')));
-  if (android) {
-    const retry = action('重新连接');
-    retry.onclick = async () => {
-      retry.disabled = true;
-      try { await enter(); }
-      catch (error) { showStatus(status, error.status === 401 ? '请登录后继续。' : error.message, 'error'); }
-      finally { retry.disabled = false; }
-    };
-    form.append(retry);
-  }
-  form.onsubmit = async (event) => {
-    event.preventDefault(); submit.disabled = true; showStatus(status, '正在核验账号…');
-    try { await request('/api/chat/login', { method: 'POST', json: { username: username.value.trim(), password: password.value } }); password.value = ''; await enter(); }
-    catch (error) { showStatus(status, error.message, 'error'); } finally { submit.disabled = false; }
+  const retry = action('重试连接', null, { class: 'button app-login-retry', hidden: true });
+  const form = el('form', { class: 'app-login-form' }, appBrand(), el('h1', {}, android ? '登录月明かり' : '今夜，也在这里相见。'),
+    el('p', {}, android ? '使用与桌面端相同的账号，继续聊天。' : '登录后，回到属于你的聊天与收藏。'),
+    el('label', { class: 'field' }, el('span', {}, '账号'), username), el('label', { class: 'field' }, el('span', {}, '密码'), password),
+    el('label', { class: 'app-login-remember' }, remember, '记住登录状态'), submit, status, retry,
+    !android && el('div', { class: 'app-login-note' }, el('a', { href: '/' }, '逛逛詩音の月光庭院')));
+  const loginError = error => {
+    showStatus(status, error.message, 'error');
+    retry.hidden = Boolean(error.status && error.status < 500 && error.status !== 404);
   };
-  request('/api/chat/bootstrap').then(v=>{if(v.available){form.querySelector('h1').textContent='为月明かり点亮第一盏灯。';form.querySelector('p').textContent='创建本机管理员，账号与密码由你设置。';submit.textContent='创建管理员';form.onsubmit=async e=>{e.preventDefault();submit.disabled=true;try{await request('/api/chat/bootstrap',{method:'POST',json:{username:username.value.trim(),password:password.value}});await request('/api/chat/login',{method:'POST',json:{username:username.value.trim(),password:password.value}});password.value='';await enter();}catch(error){showStatus(status,error.message,'error');}finally{submit.disabled=false;}};}}).catch(()=>{});
+  async function resumeSession() {
+    const attempt = ++loginAttempt;
+    retry.disabled = true;
+    try { await enter(attempt); }
+    catch (error) {
+      if (attempt !== loginAttempt) return;
+      if (error.status === 401) { android?.logout(false); showStatus(status, ''); retry.hidden = true; }
+      else loginError(error);
+    } finally { retry.disabled = false; }
+  }
+  retry.onclick = () => username.value.trim() && password.value ? form.requestSubmit() : void resumeSession();
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    const attempt = ++loginAttempt;
+    submit.disabled = retry.disabled = true; showStatus(status, '正在核验账号…');
+    try {
+      await request('/api/chat/login', { method: 'POST', signal: AbortSignal.timeout(15000),
+        json: { username: username.value.trim(), password: password.value, remember: remember.checked } });
+      password.value = ''; await enter(attempt);
+    } catch (error) { if (attempt === loginAttempt) loginError(error); }
+    finally { submit.disabled = retry.disabled = false; }
+  };
+  if (!android) request('/api/chat/bootstrap').then(v=>{if(v.available){form.querySelector('h1').textContent='为月明かり点亮第一盏灯。';form.querySelector('p').textContent='创建本机管理员，账号与密码由你设置。';submit.textContent='创建管理员';form.onsubmit=async e=>{e.preventDefault();submit.disabled=true;try{await request('/api/chat/bootstrap',{method:'POST',json:{username:username.value.trim(),password:password.value}});await request('/api/chat/login',{method:'POST',json:{username:username.value.trim(),password:password.value,remember:remember.checked}});password.value='';await enter();}catch(error){showStatus(status,error.message,'error');}finally{submit.disabled=false;}};}}).catch(()=>{});
   loginStage.replaceChildren(el('div', { class: 'app-login-art' }, image(site.heroImage, '', { loading: 'eager' }),
     el('div', { class: 'app-login-caption' }, el('p', { class: 'eyebrow' }, 'UNDER THE SAME MOON'), el('h2', {}, '星が降る夜、\nあなたと。'), el('p', {}, site.motto))), el('div', { class: 'app-login-form-wrap' }, form));
+  if (problem && problem.status !== 401) loginError(problem);
+  if (probe) void resumeSession();
 }
 
 function drawRail(){
@@ -402,6 +424,8 @@ function markRead() {
   }, 250);
 }
 function resetTimeline() {
+  timelineCursor = null;
+  oldestMessageDate = '';
   olderRequest?.abort(); olderRequest = null;
   messageNodes.clear(); messageOrder.length = 0; generating.clear();
   before = null; loadingOlder = false; readPending = false; catchingUp = false; newWhileReading = 0;
@@ -419,10 +443,13 @@ const renderHandlers = {
   confirmAction,
 };
 function upsert(item) {
+  if (retentionCutoff && item.createdAt <= retentionCutoff) return false;
   const previous = messageNodes.get(item.id);
   if (previous) {
     const old = previous.data;
-    if (old.updatedAt > item.updatedAt || old.updatedAt === item.updatedAt && old.status === 'complete' && item.status === 'generating') return false;
+    const stale = old.revision && item.revision ? old.revision > item.revision : old.updatedAt > item.updatedAt ||
+      old.updatedAt === item.updatedAt && old.status === 'complete' && item.status === 'generating';
+    if (stale) return false;
     if (old.updatedAt === item.updatedAt && old.status === item.status && old.body === item.body && old.senderName === item.senderName && old.senderAvatar === item.senderAvatar) return false;
     previous.data = item;
     previous.view.update(item);
@@ -439,10 +466,30 @@ function upsert(item) {
     messageOrder.splice(low, 0, item.id);
     list.insertBefore(rendered.node, next?.view.node || null);
   }
+  if (!oldestMessageDate || item.createdAt < oldestMessageDate) oldestMessageDate = item.createdAt;
   if (item.status === 'generating' && item.metadata?.requestedBy === session.key) generating.add(item.id);
   else generating.delete(item.id);
   if (item.status === 'complete' && item.senderKey !== session.key) readPending = true;
   return true;
+}
+function applyRetention(cutoff) {
+  if (typeof cutoff !== 'string' || cutoff <= retentionCutoff) return;
+  retentionCutoff = cutoff;
+  if (!oldestMessageDate || oldestMessageDate > cutoff) return;
+  oldestMessageDate = '';
+  let count = 0;
+  for (const id of messageOrder) {
+    const entry = messageNodes.get(id), created = entry.data.createdAt;
+    if (created > cutoff) {
+      messageOrder[count++] = id;
+      if (!oldestMessageDate || created < oldestMessageDate) oldestMessageDate = created;
+    } else {
+      entry.view.node.remove(); messageNodes.delete(id); pendingMessages.delete(id); generating.delete(id);
+    }
+  }
+  messageOrder.length = count;
+  if (session) reflectComposer();
+  if (!messageNodes.size && !before && view === 'chat' && !pendingThreadId && !list.firstElementChild) welcome();
 }
 function applyMessages(items, { follow = true } = {}) {
   if (!items.length) return;
@@ -476,14 +523,15 @@ function queueMessage(value) {
   if (view !== 'chat' || windowHidden()) return;
   if (value.threadId !== activeThread?.id && value.threadId !== pendingThreadId) return;
   const pending = pendingMessages.get(value.item.id);
-  if (!pending || pending.item.updatedAt <= value.item.updatedAt) pendingMessages.set(value.item.id, value);
+  if (!pending || (pending.item.revision && value.item.revision ? pending.item.revision <= value.item.revision
+    : pending.item.updatedAt <= value.item.updatedAt)) pendingMessages.set(value.item.id, value);
   flushMessageQueue();
 }
 function welcome() {
   const prompts = activeThread && activeThread.kind !== 'ai' ? [] : [['music', '听一首歌', '查看音乐'], ['moon', '逛逛庭院', '查看首页'], ['mail', '聊聊今天', '今天想和你聊一会儿。']];
   list.replaceChildren(el('div', { class: 'conversation-welcome' }, el('div', { class: 'welcome-symbol' }, icon(activeThread?.kind === 'group' ? 'heart' : 'sparkle', 35)),
     el('h2', {}, activeThread?.kind === 'direct' ? '从一句问候开始。' : activeThread?.kind === 'group' ? '把相逢，留在这里。' : '今晚，想聊些什么？'),
-    el('p', {}, activeThread?.kind==='ai'&&activeThread.members?.find(m=>m.kind==='ai')?.greeting || (activeThread && activeThread.kind !== 'ai' ? '消息仅对本会话成员可见。聊天记录会为你妥善保存。' : '说说今天的心情，听一首熟悉的歌，或照看月光下的庭院。')),
+    el('p', {}, activeThread?.kind==='ai'&&activeThread.members?.find(m=>m.kind==='ai')?.greeting || (activeThread && activeThread.kind !== 'ai' ? '消息仅对本会话成员可见。服务器保留最近30天聊天记录。' : '说说今天的心情，听一首熟悉的歌，或照看月光下的庭院。')),
     el('div', { class: 'welcome-prompts' }, prompts.map(([glyph, label, value]) => { const button = action(label, glyph); button.onclick = () => setInput(value); return button; }))));
 }
 function updateOlderButton() {
@@ -508,6 +556,7 @@ async function loadOlder() {
     if (version !== routeVersion || id !== activeThread?.id) return;
     const oldHeight = conversation.scrollHeight;
     before = result.before;
+    applyRetention(result.retainedAfter);
     applyMessages(result.messages, { follow: false });
     updateOlderButton();
     conversation.scrollTop += conversation.scrollHeight - oldHeight;
@@ -517,16 +566,18 @@ async function loadOlder() {
     if (olderRequest === controller) { olderRequest = null; loadingOlder = false; updateOlderButton(); }
   }
 }
-async function loadThread(id, { signal, version = routeVersion } = {}) {
+async function loadThread(id, { signal, version = routeVersion, replace = false } = {}) {
   const result = await request('/api/chat/threads/' + id, { signal: signal || AbortSignal.timeout(20000) });
   if (version !== routeVersion || signal?.aborted || !session) return;
   const changed = activeThread?.id !== id;
   activeThread = result.item;
-  if (changed) {
+  if (changed || replace) {
     resetTimeline();
     before = result.before;
-    restoreDraft(id);
+    if (changed) restoreDraft(id);
   }
+  timelineCursor ??= result.syncCursor ?? null;
+  applyRetention(result.retainedAfter);
   applyMessages(result.messages, { follow: !changed });
   updateOlderButton();
   if (!messageNodes.size && !list.firstElementChild) welcome();
@@ -539,7 +590,8 @@ async function loadThread(id, { signal, version = routeVersion } = {}) {
   }
 }
 async function refreshActiveThread() {
-  if (!session || view !== 'chat' || windowHidden() || !activeThread || pendingThreadId || threadRefresh) return;
+  if (!session || view !== 'chat' || windowHidden() || !activeThread || pendingThreadId) return;
+  if (threadRefresh) { threadRefresh.again = true; return; }
   const id = activeThread.id, version = routeVersion, known = messageOrder.at(-1);
   const controller = new AbortController();
   const job = { controller };
@@ -548,8 +600,24 @@ async function refreshActiveThread() {
   const path = '/api/chat/threads/' + id;
   const options = { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]) };
   try {
+    if (timelineCursor !== null) {
+      let more;
+      do {
+        const change = await request(path + '/sync?cursor=' + timelineCursor, options);
+        if (!valid()) return;
+        if (change.reset) { await loadThread(id, { signal: options.signal, version, replace: true }); break; }
+        activeThread = change.item;
+        applyRetention(change.retainedAfter);
+        applyMessages(change.messages);
+        timelineCursor = change.cursor;
+        more = change.hasMore;
+      } while (more && valid());
+      drawHeader();
+      return;
+    }
     const result = await request(path, options);
     if (!valid()) return;
+    applyRetention(result.retainedAfter);
     // If more than one page arrived while offline, fill the gap before applying the latest snapshot.
     const first = result.messages[0]?.id;
     let after = known;
@@ -561,6 +629,7 @@ async function refreshActiveThread() {
     }
     activeThread = result.item;
     applyMessages(result.messages);
+    timelineCursor = result.syncCursor ?? null;
     drawHeader();
   } catch (error) {
     if (valid() && error.status === 404) forgetThread(id);
@@ -569,6 +638,7 @@ async function refreshActiveThread() {
       threadRefresh = null;
       catchingUp = false;
       markRead();
+      if (job.again && valid()) scheduleActiveRefresh();
     }
   }
 }
@@ -1055,20 +1125,33 @@ async function checkSession() {
   const version = accountVersion;
   const job = request('/api/chat/session').then(value => {
     if (version !== accountVersion) return;
+    if (value.key !== session.key) { showLogin(false, null, true); return; }
     session = value;
+    applyRetention(value.retainedAfter);
+    void renewSession();
     drawRail(); reflectComposer();
   }).catch(() => {});
   sessionRefresh = job;
   await job;
   if (sessionRefresh === job) sessionRefresh = null;
 }
+async function renewSession() {
+  if (!session?.renewable || lastRenewAttempt && performance.now() - lastRenewAttempt < 10 * 60_000) return;
+  const version = accountVersion;
+  lastRenewAttempt = Math.max(1, performance.now());
+  try {
+    await request('/api/chat/session/refresh', { method: 'POST', signal: AbortSignal.timeout(12000) });
+    if (version === accountVersion) android?.sessionRefreshed();
+  } catch { if (version === accountVersion) lastRenewAttempt = 0; }
+}
 function openChatEvents() {
   if (!session || android && windowHidden()) return;
   clearTimeout(reconnectTimer);
   source?.close();
   const stream = source = new EventSource('/api/chat/events');
-  stream.addEventListener('ready', () => {
+  stream.addEventListener('ready', event => {
     if (source !== stream || !session) return;
+    applyRetention(JSON.parse(event.data).retainedAfter);
     reconnectDelay = 1000;
     setConnectionState('online');
     socialUI.connected();
@@ -1076,9 +1159,11 @@ function openChatEvents() {
     scheduleThreads();
     scheduleActiveRefresh();
   });
+  stream.addEventListener('retention', event => { if (source === stream && session) applyRetention(JSON.parse(event.data).retainedAfter); });
   stream.addEventListener('message', event => {
     if (source !== stream || !session) return;
     const value = JSON.parse(event.data);
+    if (retentionCutoff && value.item.createdAt <= retentionCutoff) return;
     if (android) android.showNotice(value, threads); else socialUI.notifyMessage(value);
     const notice = value.item.metadata?.noticeEventId;
     if (notice && !seenNotices.has(notice)) { seenNotices.add(notice); toast(value.item.metadata.questions ? '庭院收到新的来信，已放入「庭院来信」。' : '庭院更新已同步，批次清单已放入「庭院来信」。'); }
@@ -1131,9 +1216,13 @@ async function refreshNotices() {
   catch { /* The database cursor is advanced atomically with the saved notice. */ }
   finally { if (session?.key === owner) syncingNotices = false; }
 }
-async function enter() {
-  session = await request('/api/chat/session');
+async function enter(attempt = ++loginAttempt) {
+  const value = await request('/api/chat/session', { signal: AbortSignal.timeout(12000) });
+  if (attempt !== loginAttempt) return;
+  if (!value.key) throw new Error('聊天服务暂未就绪，请稍后重试。');
+  session = value;
   accountVersion++;
+  retentionCutoff = value.retainedAfter || '';
   view = 'chat';
   loginStage.hidden = true; loginStage.replaceChildren(); shell.hidden = false;
   buildComposer(); socialUI.start(); connect(); refreshWebsite(); trackRoute('/chat');
@@ -1145,7 +1234,7 @@ async function enter() {
   const restored = !url.search && wanted === 'chat' ? saved : null;
   try { await navigate(wanted, { threadId: url.searchParams.get('t') || restored?.thread, section:url.searchParams.get('section')||undefined, panel: url.searchParams.get('panel') || undefined, fromHistory: true, androidList: restored?.list }); }
   catch (error) { toast(error.message, 'error'); await navigate('chat'); }
-  if (session) { android?.session(session); android?.read(threads); }
+  if (session) { android?.session(session); android?.read(threads); void renewSession(); }
 }
 addEventListener('popstate', () => {
   if (!session) return;
@@ -1189,4 +1278,5 @@ if (android) android.bindSwipe(sidebar, delta => {
 });
 if (!android && 'serviceWorker' in navigator) navigator.serviceWorker.register('/chat-worker.js', { scope: '/chat' }).catch(() => {});
 setTimeout(() => document.querySelector('#app-boot')?.remove(), 950);
-enter().catch(() => showLogin());
+if (android) showLogin(false, null, true);
+else enter().catch(error => showLogin(false, error));

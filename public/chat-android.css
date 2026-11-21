@@ -57,7 +57,7 @@
 .android-app .composer-files .icon-button { width: 40px; min-height: 40px; }
 .android-app .application-page { min-width: 0; min-height: 0; height: auto; }
 .android-app .page-section .field input, .android-app input[type=search], .android-app select,
-.android-app .contacts-search input, .android-app .app-login-form input { min-height: 48px; font-size: 16px; }
+.android-app .contacts-search input, .android-app .app-login-form .field input { min-height: 48px; font-size: 16px; }
 .android-app .page-section :is(.muted, .hint, p) { font-size: 15px; }
 .android-app .page-heading h2 { font-size: 23px; }
 .android-app .page-nav .button { min-height: 46px; font-size: 14px; }
@@ -65,6 +65,7 @@
 .android-app .app-login { min-height: 100dvh; }
 .android-app .app-login-form-wrap { min-width: 0; padding: 26px; }
 .android-app .app-login-form { width: min(100%, 440px); }
+.android-app .app-login-form > p, .android-app .app-login-remember { font-size: 1rem; }
 .android-app .app-login-form .button { min-height: 48px; }
 .android-app .app-login-note { display: grid; gap: 8px; line-height: 1.6; }
 .android-app .app-dialog { max-width: calc(100% - 28px); }

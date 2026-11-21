@@ -87,8 +87,16 @@ function seedDatabase() {
   fs.mkdirSync(dirname(databasePath), { recursive: true });
 }
 async function startBackend() {
-  const remoteServer=process.env.TSUKIAKARI_CHAT_SERVER_URL||process.env.HOSHIFURU_CHAT_SERVER_URL;
-  if(remoteServer){const url=new URL(remoteServer);if(url.protocol!=='https:'||url.username||url.password||url.pathname!=='/')throw Error('远程聊天后端须为HTTPS站点根地址。');origin=url.origin;state.origin=origin;state.serverMode='remote';ready=true;state.ready=true;configureSession(session.defaultSession);return;}
+  const release = readJson(join(resources, 'chat-public.json'));
+  const remoteServer = !process.argv.includes('--local') && (process.env.TSUKIAKARI_CHAT_SERVER_URL || process.env.HOSHIFURU_CHAT_SERVER_URL ||
+    (release.sharedChat || process.argv.includes('--shared-chat') ? release.origin : null));
+  if (remoteServer) {
+    const url = new URL(remoteServer);
+    const localDevelopment = !app.isPackaged && url.protocol === 'http:' && url.hostname === '127.0.0.1';
+    if (!(url.protocol === 'https:' || localDevelopment) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw Error('远程聊天后端须为 HTTPS 站点根地址。');
+    origin = url.origin; state.origin = origin; state.serverMode = 'remote'; ready = true; state.ready = true;
+    configureSession(session.defaultSession); return;
+  }
   seedDatabase();
   const port = await availablePort(preferences.port); accessToken = randomBytes(32).toString('hex');
   origin = 'http://127.0.0.1:' + port; state.origin = origin;

@@ -6,7 +6,7 @@ import { prepareDesktop } from './prepare-desktop.mjs';
 import { root, sha256 } from '../server/core.mjs';
 const portableOnly = process.argv.includes('--portable-only');
 const previous = portableOnly ? JSON.parse(await readFile(join(root, 'artifacts/desktop-app.json'), 'utf8')) : null;
-const prepared = portableOnly ? { desktop: join(root, 'desktop'), output: join(root, 'desktop/.generated'), report: previous.preparation } : await prepareDesktop();
+const prepared = portableOnly ? { desktop: join(root, 'desktop'), output: join(root, 'desktop/.generated'), report: previous.preparation } : await prepareDesktop({ sharedChat: process.argv.includes('--shared-chat') });
 const { desktop, output, report: preparation } = prepared;
 const require = createRequire(join(desktop, 'package.json'));
 const { build, Platform, Arch } = require('electron-builder');
@@ -20,7 +20,7 @@ const paths = await build({ projectDir: desktop, ...(portableOnly ? { prepackage
   copyright: 'Copyright © 2026 Shion', asar: true, npmRebuild: false, buildDependenciesFromSource: false,
   files: ['main.cjs', 'policy.cjs', 'features.cjs', 'window-prompts.cjs', '.generated/window-preload.cjs',
     'settings.html', 'settings.css', 'settings.js', 'splash.html', 'splash.css', 'icon.ico', 'icon.png', 'tray.png', 'package.json'],
-  extraResources: [{ from: join(output, 'backend'), to: 'backend' }, {from:join(output,'seed/moonlit.sqlite'),to:'seed/moonlit.sqlite'},{from:join(output,'seed/website.sqlite'),to:'seed/website.sqlite'}, { from: join(output, 'initial-model.json'), to: 'initial-model.json' },{from:join(output,'initial-astrbot.json'),to:'initial-astrbot.json'}],
+  extraResources: [{ from: join(output, 'backend'), to: 'backend' }, {from:join(output,'seed/moonlit.sqlite'),to:'seed/moonlit.sqlite'},{from:join(output,'seed/website.sqlite'),to:'seed/website.sqlite'}, { from: join(output, 'initial-model.json'), to: 'initial-model.json' },{from:join(output,'initial-astrbot.json'),to:'initial-astrbot.json'}, {from:join(output,'chat-public.json'),to:'chat-public.json'}],
   // electron-builder deliberately filters nested node_modules in extraResources.
   // These are dependencies of the SEPARATE Node backend, not Electron modules.
   afterPack: async ({ appOutDir }) => {

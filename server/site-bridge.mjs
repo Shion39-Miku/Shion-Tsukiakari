@@ -6,8 +6,9 @@ import {randomBytes} from 'node:crypto';
 import {check,Problem,now} from './core.mjs';
 import {requireAccount} from './auth.mjs';
 import {canReadChatFile} from './chat-access.mjs';
+import {retainedAfter} from './chat-retention.mjs';
 
-export function createSiteBridge({baseUrl,eventToken='',db}){
+export function createSiteBridge({baseUrl,eventToken='',db,chatClock}){
  const clients=new Set();
  const origin=new URL(baseUrl).origin;
  check(new URL(origin).protocol==='https:'||['127.0.0.1','localhost','[::1]'].includes(new URL(origin).hostname),'网站联动须使用HTTPS或本机地址。');
@@ -43,7 +44,7 @@ export function createSiteBridge({baseUrl,eventToken='',db}){
  async function events(after,req){await siteSession(req);check(eventToken,'网站事件连接未配置。',503);return(await fetchSite('/api/v1/events?after='+after+'&limit=100',{headers:{Authorization:'Bearer '+eventToken}})).json();}
  async function exportMedia(session,req,ids){
   check(Array.isArray(ids)&&ids.length<=8,'导出媒体列表无效。');const site=await siteSession(req),result={};
-  for(const id of ids){check(canReadChatFile(db,session.key,id),'不能转交不属于当前账号或会话的附件。',403);const existing=db.prepare('SELECT site_media_id FROM chat_site_exports WHERE account_key=? AND media_id=?').get(session.key,id);if(existing){result[id]=existing.site_media_id;continue;}
+  for(const id of ids){check(canReadChatFile(db,session.key,id,retainedAfter(chatClock)),'附件不可用或不属于当前账号或会话。',403);const existing=db.prepare('SELECT site_media_id FROM chat_site_exports WHERE account_key=? AND media_id=?').get(session.key,id);if(existing){result[id]=existing.site_media_id;continue;}
    const m=db.prepare('SELECT * FROM media WHERE id=?').get(id);check(m,'附件不存在。',404);const kind=m.mime.startsWith('image/')?'image':m.mime.startsWith('audio/')?'audio':'lyrics';const boundary='hoshifuru'+randomBytes(16).toString('hex');
    const filename=m.name.replace(/["\r\n\\]/g,'_');const prefix=Buffer.from('--'+boundary+'\r\nContent-Disposition: form-data; name="kind"\r\n\r\n'+kind+'\r\n--'+boundary+'\r\nContent-Disposition: form-data; name="file"; filename="'+filename+'"\r\nContent-Type: '+m.mime+'\r\n\r\n'),suffix=Buffer.from('\r\n--'+boundary+'--\r\n');
    async function* content(){yield prefix;for(const chunk of db.prepare('SELECT data FROM media_chunks WHERE media_id=? ORDER BY seq').iterate(id))yield Buffer.from(chunk.data);yield suffix;}

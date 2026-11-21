@@ -2,6 +2,17 @@ plugins {
     id 'com.android.application'
 }
 
+def workspace = rootProject.projectDir.parentFile
+def productionOrigin = new groovy.json.JsonSlurper().parse(new File(workspace, 'deploy/chat-public.json')).origin
+def publicUri = new URI(productionOrigin)
+if (publicUri.scheme != 'https' || productionOrigin != "https://${publicUri.host}" ||
+    !(publicUri.host ==~ /(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}/) ||
+    (publicUri.host =~ /(^|\.)(example\.(com|net|org)|example|localhost|local|test|invalid)$/).find()) {
+    throw new GradleException('安卓发布配置必须包含已确定的公开 HTTPS 源地址。')
+}
+def qaPort = Integer.parseInt(providers.environmentVariable('TSUKIAKARI_ANDROID_QA_PORT').orElse('4187').get())
+if (qaPort < 1024 || qaPort > 65535) throw new GradleException('安卓联调端口无效。')
+
 android {
     namespace 'wiki.shion.tsukiakari'
     compileSdk 35
@@ -11,12 +22,16 @@ android {
         applicationId 'wiki.shion.tsukiakari'
         minSdk 28
         targetSdk 35
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 2
+        versionName '0.1.1'
+        buildConfigField 'String', 'CHAT_ORIGIN', "\"${productionOrigin}\""
     }
     buildFeatures { buildConfig true }
     buildTypes {
-        debug { applicationIdSuffix '.qa' }
+        debug {
+            applicationIdSuffix '.qa'
+            buildConfigField 'String', 'CHAT_ORIGIN', "\"http://127.0.0.1:${qaPort}\""
+        }
         testRelease {
             initWith release
             signingConfig signingConfigs.debug
@@ -32,7 +47,6 @@ android {
     }
 }
 
-def workspace = rootProject.projectDir.parentFile
 def prepared = layout.buildDirectory.dir('generated/tsukiakari')
 tasks.register('prepareChatAssets', Exec) {
     workingDir workspace

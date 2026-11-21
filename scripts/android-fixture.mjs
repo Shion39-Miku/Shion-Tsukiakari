@@ -8,12 +8,13 @@ import { pathToFileURL } from 'node:url';
 import { createApplication } from '../server/app.mjs';
 import { openDatabase, readConfig, sha256 } from '../server/core.mjs';
 import { setAdmin } from '../server/auth.mjs';
+import { androidChatOrigin } from './android-release-config.mjs';
 
 const token = () => randomBytes(24).toString('base64url');
-const listen = async server => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return 'http://127.0.0.1:' + server.address().port; };
+const listen = async (server, port = 0) => { server.listen(port, '127.0.0.1'); await once(server, 'listening'); return 'http://127.0.0.1:' + server.address().port; };
 const close = async server => { server.closeAllConnections(); await new Promise(done => server.close(done)); };
 
-export async function androidFixture(folder = 'artifacts/android/fixture') {
+export async function androidFixture(folder = 'artifacts/android/fixture', { port } = {}) {
   const parent = resolve(folder);
   await mkdir(parent, { recursive: true });
   const data = await mkdtemp(join(parent, 'demo-'));
@@ -57,7 +58,7 @@ export async function androidFixture(folder = 'artifacts/android/fixture') {
   const websiteUrl = await listen(website);
   const chat = await createApplication({ ...common, dbPath: chatPath, serviceMode: 'chat', websiteUrl, websiteEventToken: eventToken,
     astrbot: { baseUrl: botOrigin, chatToken: token(), adminToken: token() } });
-  const origin = await listen(chat);
+  const origin = await listen(chat, port);
 
   async function login(user) {
     const response = await fetch(origin + '/api/chat/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(user) });
@@ -118,7 +119,7 @@ export async function androidFixture(folder = 'artifacts/android/fixture') {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const folder = process.argv[2] || 'artifacts/android/fixture';
-  const fixture = await androidFixture(folder);
+  const fixture = await androidFixture(folder, { port: Number(new URL(androidChatOrigin(true)).port) });
   const { origin, owner, member, peer, direct, group, assistant } = fixture;
   await writeFile(join(folder, 'fixture.private.json'), JSON.stringify({ origin, owner, member, peer, direct, group, assistant }), { mode: 0o600 });
   console.log('隔离安卓测试服务已就绪 · ' + origin);

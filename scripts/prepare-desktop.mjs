@@ -7,7 +7,7 @@ import {createApplication} from '../server/app.mjs';
 import {copyProductionDependencies} from './copy-dependencies.mjs';
 import { root, readConfig, sha256 } from '../server/core.mjs';
 
-export async function prepareDesktop() {
+export async function prepareDesktop({ sharedChat = false } = {}) {
   const config = readConfig(), desktop = join(root, 'desktop'), output = join(desktop, '.generated');
   const backend = join(output, 'backend'); await mkdir(backend, {recursive:true});
   const [dialog, dialogCss, preload] = await Promise.all([
@@ -37,6 +37,8 @@ export async function prepareDesktop() {
   await new Promise(done=>seed.listen(0,'127.0.0.1',done));await new Promise(done=>seed.close(done));
   const database=new DatabaseSync(source,{readOnly:true});let info;try{for(const name of ['moonlit.sqlite','website.sqlite']){const temp=join(output,'seed',name+'.new');await backup(database,temp);await rename(temp,join(output,'seed',name));}info={media:database.prepare('SELECT count(*) AS files,coalesce(sum(size),0) AS bytes FROM media').get(),migrations:database.prepare('SELECT count(*) AS n FROM schema_migrations').get().n,adminAccounts:database.prepare('SELECT count(*) AS n FROM admins').get().n};}finally{database.close();}
   await writeFile(join(output,'initial-model.json'),'{}');await writeFile(join(output,'initial-astrbot.json'),'{}');
+  const { origin } = JSON.parse(await readFile(join(root, 'deploy/chat-public.json'), 'utf8'));
+  await writeFile(join(output, 'chat-public.json'), JSON.stringify({ origin, sharedChat }));
   await copyFile(join(root,'public/assets/brand/tsukiakari-512.png'),join(desktop,'icon.png'));
   const sizes = [16, 24, 32, 48, 64, 128, 256], entries = [];
   for (const size of sizes) entries.push(await sharp(join(desktop, 'icon.png')).resize(size, size).png().toBuffer());

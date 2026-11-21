@@ -16,9 +16,13 @@ final class Device {
         prefs = this.context.getSharedPreferences("device", Context.MODE_PRIVATE);
     }
 
-    String origin() { return prefs.getString("origin", ""); }
+    String origin() { return BuildConfig.CHAT_ORIGIN; }
     String owner() { return prefs.getString("owner", ""); }
-    void connectedTo(String origin) { prefs.edit().putString("origin", origin).remove("owner").apply(); }
+    boolean resetForNewOrigin() {
+        if (origin().equals(prefs.getString("origin", ""))) return false;
+        prefs.edit().putString("origin", origin()).remove("owner").apply();
+        return true;
+    }
     void owner(String value) { prefs.edit().putString("owner", value).apply(); }
 
     private String key(String account, String flag) { return "pref:" + origin() + ":" + account + ":" + flag; }

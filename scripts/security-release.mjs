@@ -97,6 +97,11 @@ export function checkInstaller(file, { scan, protectedPath }) {
     for (const name of ['initial-model.json', 'initial-astrbot.json']) {
       if (readFileSync(join(resources, name), 'utf8').trim() !== '{}') throw new SecurityError('发布包预装了连接配置。');
     }
+    const chat = JSON.parse(readFileSync(join(resources, 'chat-public.json'), 'utf8'));
+    const publicChat = JSON.parse(readFileSync(join(root, 'deploy/chat-public.json'), 'utf8'));
+    if (Object.keys(chat).length !== 2 || chat.origin !== publicChat.origin || typeof chat.sharedChat !== 'boolean') {
+      throw new SecurityError('桌面包的公开聊天连接配置未经审核。');
+    }
     inspectAsar(join(resources, 'app.asar'), join(scratch, 'asar'), scan, protectedPath);
     scan(['dir', resources, '--max-target-megabytes=32']);
   } finally {

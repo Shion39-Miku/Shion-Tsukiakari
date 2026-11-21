@@ -49,6 +49,8 @@ jobs:
           runtime: 'node@24.22.3'
           install: false
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir desktop install --frozen-lockfile
+      - run: node desktop/node_modules/electron/install.js
       - name: Build APKs and test with Android 15
         shell: bash
         run: |
@@ -92,7 +94,7 @@ jobs:
             sleep 2
           done
           test "$booted" = 1
-          pnpm check:android:device artifacts/android/*/*-Android.apk artifacts/android/*/*-QA.apk
+          TSUKIAKARI_QA_ELECTRON=1 xvfb-run -a pnpm check:android:device artifacts/android/*/*-Android.apk artifacts/android/*/*-QA.apk
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:

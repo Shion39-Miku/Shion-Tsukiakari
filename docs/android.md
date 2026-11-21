@@ -2,9 +2,9 @@
 
 ## 安装及登录
 
-1. 在 Android 9 或更新的设备上更新 Android System WebView。将 `Tsukiakari-0.1.0-Android.apk` 传到设备并打开，由系统确认安装。APK 由本地测试证书签名。
-2. 首次打开时填入聊天服务的 HTTPS 根地址，例如 `https://chat.example.org`。应用先检查聊天接口，连接成功后会进入登录。网站首页与单独部署的聊天地址各有用途。
-3. 使用同一聊天服务创建的账号登录。若桌面也要同步，将 `TSUKIAKARI_CHAT_SERVER_URL` 配置到同一地址。网站管理授权按网站后端的独立会话检查。
+1. 在 Android 9 或更新的设备上更新 Android System WebView。打开 `Tsukiakari-0.1.1-Android.apk`，由系统确认安装。APK 由本地测试证书签名。
+2. 打开月明かり，在登录页输入共享聊天账号和密码。勾选「记住登录状态」可在重启后继续使用有效会话。网络或服务暂不可用时，登录页会提供「重试连接」。在「我的」里可退出登录。
+3. 手机、平板和已启用共享模式的桌面端使用同一账号时，会话、已读和最近 30 天的消息会自动同步。网站管理仍使用独立授权。 [共享后端上线配置](chat-retention.md)
 4. 更新时使用同样包名与签名，否则安卓会拒绝覆盖安装。卸载前清点此设备的草稿与文件。
 
 ## 手机和平板
@@ -14,6 +14,7 @@
 - 点加号开始 AI、好友或群聊。群聊通过邀请加入，受邀用户在通讯录接受。选择群中允许使用的 AI 时沿用服务端人格及记忆授权。历史记录滚动到顶部后可以继续加载。
 - 手机键盘的回车会换行，点击发送按钮发出消息。有外接键盘时可用 Ctrl+Enter。点附件按钮打开系统文件选择器，下载和导出会打开系统保存窗口。
 - 「我的」可修改资料、头像、在线状态、记忆授权及设备通知。管理员额外看到「网站管理」与「软件管理」。网站草稿按原有保存、同步流程发布；人格由 AstrBot 后端管理并回读。
+- 「我的 → 关于月明かり」说明服务器的 30 天保留期。旧聊天附件随服务器引用到期。未发送草稿留在设备，主动导出的文件由你保管。
 
 ## 通知
 
@@ -29,7 +30,7 @@
 
 [Android 15 启动器实拍](images/android-shortcut.png) · [暂别月光页面实拍](images/android-farewell.png)
 
-「导出个人数据」通过系统文件选择器保存 JSON，包括个人资料、好友、会话目录和本机文字草稿。完整聊天和附件仍由服务器管理。「卸载应用」打开安卓系统确认。卸载会移除本机登录、缓存和草稿；服务器账号与聊天继续保留。
+「导出个人数据」通过系统文件选择器保存 JSON，包括个人资料、好友、会话目录和本机文字草稿。服务器聊天与附件按保留策略管理。「卸载应用」打开安卓系统确认。卸载移除本机登录、缓存和草稿。服务器账号仍可登录，已导出的文件由用户管理。
 
 ## 开发与测试
 
@@ -42,16 +43,16 @@ pnpm android:build --debug
 pnpm security:check android
 ```
 
-APK 和 SHA-256 清单写到 `artifacts/android/0.1.0/` 与 `artifacts/android/0.1.0-qa/`。同一构建机复用测试签名。Windows 签名文件位于当前用户的本地应用数据，Linux 构建机使用忽略的构建目录。
+APK 和 SHA-256 清单写到 `artifacts/android/0.1.1/` 与 `artifacts/android/0.1.1-qa/`。同一构建机复用测试签名。Windows 签名文件位于当前用户的本地应用数据，Linux 构建机使用忽略的构建目录。
 
-QA 版包名以 `.qa` 结尾，允许调试和仅用于 ADB 的回环 HTTP。接入本机时使用 `adb reverse tcp:端口 tcp:端口`，再填 `http://127.0.0.1:端口`。标准 HTTPS 测试包适合手动安装。未配置可信 HTTPS 的环境可运行隔离验收，包括一位演示管理员、两位普通演示用户、分开的聊天和网站数据库，以及模拟 AstrBot。
+QA 版包名以 `.qa` 结尾，预置供 ADB 转发的回环 HTTP，默认端口 4187。开发机可用 `TSUKIAKARI_ANDROID_QA_PORT` 在构建和启动演示服务时统一选择端口。标准包从 `deploy/chat-public.json` 编译公开 HTTPS 地址。
 
-手动验收时，在电脑运行 `node --disable-warning=ExperimentalWarning scripts/android-fixture.mjs`。终端会显示实际端口，演示登录信息写入本机的 `artifacts/android/fixture/fixture.private.json`。保持终端运行，把 QA APK 安装到已授权 USB 调试的设备，用 ADB 转发该端口即可登录演示账号。
+手动验收时，在电脑运行 `node --disable-warning=ExperimentalWarning scripts/android-fixture.mjs`。脚本启动隔离的网站、聊天数据库与模拟 AstrBot，并把演示登录信息写入忽略目录内的 `artifacts/android/fixture/fixture.private.json`。在已授权 USB 调试的设备安装 QA 包后执行 `adb reverse tcp:4187 tcp:4187`，直接用演示账号登录。桌面可以同时打开同一服务。 [本地联调配置](chat-retention.md#验证与部署)
 
 ```sh
 pnpm exec playwright install chromium
 pnpm check:android:ui
-pnpm check:android:device artifacts/android/0.1.0/Tsukiakari-0.1.0-Android.apk artifacts/android/0.1.0-qa/Tsukiakari-0.1.0-QA.apk
+pnpm check:android:device artifacts/android/0.1.1/Tsukiakari-0.1.1-Android.apk artifacts/android/0.1.1-qa/Tsukiakari-0.1.1-QA.apk
 ```
 
 设备验收脚本默认使用隔离的 `emulator-5554`，会调整该模拟器的显示与输入设置。测试数据留在忽略的 `artifacts/`。CI 验收截图只含演示数据。

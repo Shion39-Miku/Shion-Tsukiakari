@@ -1,8 +1,9 @@
 import { check, cleanText, newId, now, Problem, sha256, transaction } from './core.mjs';
 import { readJson } from './media.mjs';
+import { chatRetentionMs } from './chat-retention.mjs';
 
 const stableId=(text)=>{const h=sha256(text);return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`;};
-export function createChatAI(db,config,{social,own,emit,publish,message}) {
+export function createChatAI(db,config,{social,own,emit,publish,message,cutoff}) {
   const settings=config.astrbot || {}, active=new Map();let closed=false,refreshing,pumping=false;
   let configured=!!(settings.baseUrl&&settings.chatToken);
   async function remote(path,{admin=false,method='GET',body,version,key,actor,signal}={}){
@@ -66,8 +67,9 @@ export function createChatAI(db,config,{social,own,emit,publish,message}) {
   function context(job){
     const thread=db.prepare('SELECT * FROM chat_threads WHERE id=?').get(job.thread_id), a=agent(job.ai_id), session=db.prepare('SELECT * FROM chat_ai_sessions WHERE thread_id=? AND ai_id=?').get(job.thread_id,job.ai_id);
     const humans=social.members(job.thread_id).filter(u=>u.kind!=='ai'&&u.role!=='disabled');const keys=new Set(humans.map(u=>u.key));
-    const source=db.prepare('SELECT * FROM chat_messages WHERE id=?').get(job.source_id);check(source&&keys.has(source.sender_key),'消息发送者已退出，停止处理。',410);
-    const all=db.prepare("SELECT * FROM chat_messages WHERE thread_id=? AND id<=? AND (status='complete' OR id=?) ORDER BY id DESC LIMIT 150").all(job.thread_id,job.source_id,job.source_id).reverse().filter(r=>r.role==='user'?keys.has(r.sender_key):r.sender_key==='ai:'+job.ai_id);
+    const since = cutoff();
+    const source=db.prepare('SELECT * FROM chat_messages WHERE id=? AND created_at>?').get(job.source_id,since);check(source&&keys.has(source.sender_key),'消息已到期或发送者已退出，停止处理。',410);
+    const all=db.prepare("SELECT * FROM chat_messages WHERE thread_id=? AND id<=? AND created_at>? AND (status='complete' OR id=?) ORDER BY id DESC LIMIT 150").all(job.thread_id,job.source_id,since,job.source_id).reverse().filter(r=>r.role==='user'?keys.has(r.sender_key):r.sender_key==='ai:'+job.ai_id);
     const recent=all.slice(-30);let budget=22000;const messages=[];
     for(const row of recent.reverse()){const p=social.profile(row.sender_key);const body=row.body.slice(0,Math.min(2200,budget));if(budget<=0)break;budget-=body.length;messages.unshift({id:row.id,role:row.role,senderId:p?.id||job.ai_id,displayName:p?.displayName||a.name,createdAt:row.created_at,body});}
     const older=all.slice(0,Math.max(0,all.length-30));const summary=older.slice(-25).map(r=>`[消息${r.id};${social.profile(r.sender_key)?.id||job.ai_id}] ${r.body.slice(0,130)}`).join('\n').slice(-4000);
@@ -75,19 +77,21 @@ export function createChatAI(db,config,{social,own,emit,publish,message}) {
     const terms=source.body.match(/[\u4e00-\u9fff]{2,6}|[a-zA-Z0-9]{2,}/g)||[];
     const memories=db.prepare(`SELECT * FROM chat_memories WHERE revoked=0 AND owner_key IN (${[...keys].map(()=>'?').join(',')}) AND (scope='shared' OR (scope='group' AND thread_id=?) OR (scope='private' AND ?='ai' AND owner_key=?)) ORDER BY updated_at DESC LIMIT 256`).all(...keys,job.thread_id,thread.kind,source.sender_key)
       .map(m=>({...m,score:terms.reduce((n,t)=>n+(m.body.includes(t)?1:0),0)})).sort((a,b)=>b.score-a.score).slice(0,8).map(m=>({id:m.id,ownerId:social.profile(m.owner_key).id,scope:m.scope,threadId:m.thread_id,body:m.body.slice(0,500),version:m.version,sourceMessageId:m.source_message_id,sourceActor:social.profile(m.source_actor)?.id||m.source_actor}));
-    return {requestId:job.id+'-'+job.attempt,personaId:a.remote_id,title:thread.title,scope:{threadId:thread.id,aiId:a.id,kind:thread.kind,epoch:session.roster_version},members:humans.map(u=>({id:u.id,displayName:u.displayName,kind:'human'})),messages,summary,memories};
+    return {requestId:job.id+'-'+job.attempt,expiresAt:new Date(Date.parse(source.created_at)+chatRetentionMs).toISOString(),personaId:a.remote_id,
+      scope:{threadId:thread.id,aiId:a.id,kind:thread.kind,epoch:session.roster_version},members:humans.map(u=>({id:u.id,displayName:u.displayName,kind:'human'})),messages,summary,memories};
   }
   function queue(session,thread,source,selectedAgents){
     const result=[];
     for(const a of selectedAgents){let old=db.prepare('SELECT * FROM chat_ai_jobs WHERE source_id=? AND ai_id=?').get(source.id,a.id);if(old){const m=db.prepare('SELECT * FROM chat_messages WHERE id=?').get(old.reply_id);if(m)result.push(m);continue;}
-      const id=newId(),at=now(),meta=JSON.stringify({requestedBy:session.key,aiId:a.id,sourceMessageId:source.id,queued:true});
+      const id=newId(),at=source.created_at,meta=JSON.stringify({requestedBy:session.key,aiId:a.id,sourceMessageId:source.id,queued:true});
       const reply=db.prepare("INSERT INTO chat_messages(thread_id,role,sender_key,sender_name,body,status,metadata,request_key,created_at,updated_at) VALUES(?,'assistant',?,?,?,'generating',?,?,?,?)").run(thread.id,'ai:'+a.id,a.name,'',meta,'ai-job:'+id,at,at);
       const epoch=db.prepare('SELECT roster_version FROM chat_ai_sessions WHERE thread_id=? AND ai_id=?').get(thread.id,a.id).roster_version;
       db.prepare("INSERT INTO chat_ai_jobs VALUES(?,?,?,?,?,'queued',0,?,?,?)").run(id,thread.id,a.id,source.id,Number(reply.lastInsertRowid),epoch,at,at);result.push(db.prepare('SELECT * FROM chat_messages WHERE id=?').get(Number(reply.lastInsertRowid)));
     }queueMicrotask(()=>void pump());return result;
   }
   function update(job,text,status,error){
-    if(closed)return;const row=db.prepare('SELECT metadata FROM chat_messages WHERE id=?').get(job.reply_id);if(!row)return;
+    if(closed)return;const row=db.prepare(`SELECT metadata FROM chat_messages WHERE id=? AND created_at>?
+      AND EXISTS(SELECT 1 FROM chat_messages WHERE id=? AND created_at>?)`).get(job.reply_id,cutoff(),job.source_id,cutoff());if(!row)return;
     const permitted=db.prepare('SELECT 1 FROM chat_ai_members WHERE thread_id=? AND ai_id=? AND active=1').get(job.thread_id,job.ai_id);if(!permitted&&status!=='stopped')return;
     const meta=JSON.parse(row.metadata);meta.queued=false;if(error)meta.error=error;else delete meta.error;
     db.prepare('UPDATE chat_messages SET body=?,status=?,metadata=?,updated_at=? WHERE id=?').run(text,status,JSON.stringify(meta),now(),job.reply_id);publish(null,job.thread_id,job.reply_id);

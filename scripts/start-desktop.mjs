@@ -6,6 +6,6 @@ import { prepareDesktop } from './prepare-desktop.mjs';
 const { desktop } = await prepareDesktop();
 const require = createRequire(join(desktop, 'package.json'));
 const environment = { ...process.env }; delete environment.ELECTRON_RUN_AS_NODE;
-const child = spawn(require('electron'), [desktop], { cwd: desktop, stdio: 'inherit', env: environment });
+const child = spawn(require('electron'), [desktop, ...process.argv.slice(2).filter(value => value !== '--')], { cwd: desktop, stdio: 'inherit', env: environment });
 child.on('error', (error) => { console.error(error.message); });
 const [code] = await once(child, 'exit'); process.exitCode = code || 0;

@@ -32,6 +32,7 @@
     "admin:init": "node --disable-warning=ExperimentalWarning scripts/site.mjs admin",
     "db:backup": "node --disable-warning=ExperimentalWarning scripts/site.mjs backup",
     "db:restore": "node --disable-warning=ExperimentalWarning scripts/site.mjs restore",
+    "chat:prune": "node --disable-warning=ExperimentalWarning scripts/site.mjs chat-prune",
     "bot:demo": "node scripts/bot-demo.mjs",
     "check:browser": "node --disable-warning=ExperimentalWarning scripts/check-browser.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs",

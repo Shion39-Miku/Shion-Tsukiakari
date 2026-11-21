@@ -1,0 +1,28 @@
+[Unit]
+Description=Tsukiakari shared chat backend
+After=network.target moonlit.service
+
+[Service]
+Type=simple
+User=moonlit
+Group=moonlit
+WorkingDirectory=/www/wwwroot/shion.wiki/current
+EnvironmentFile=/etc/moonlit/chat.env
+Environment=UPLOAD_TEMP_DIR=/run/moonlit-chat
+ExecStart=/opt/moonlit-node/bin/node --disable-warning=ExperimentalWarning server/chat-index.mjs
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+StateDirectory=moonlit-chat
+StateDirectoryMode=0700
+RuntimeDirectory=moonlit-chat
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryMax=768M
+
+[Install]
+WantedBy=multi-user.target

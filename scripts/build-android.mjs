@@ -4,6 +4,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { androidChatOrigin } from './android-release-config.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const source = join(root, 'android/app/src/main');
@@ -16,6 +17,7 @@ const versionCode = read('versionCode', '(\\d+)');
 const min = read('minSdk', '(\\d+)'), target = read('targetSdk', '(\\d+)'), compile = read('compileSdk', '(\\d+)');
 const toolsVersion = read('buildToolsVersion', "'([^']+)'");
 const debug = process.argv.includes('--debug');
+const chatOrigin = androidChatOrigin(debug);
 const windows = process.platform === 'win32';
 const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
 const javaHome = process.env.JAVA_HOME;
@@ -73,7 +75,7 @@ try {
     .replace(/android:name="\.(\w+)"/g, (_, cls) => 'android:name="' + namespace + '.' + cls + '"')
     .replace('android:usesCleartextTraffic="false"', debug ? 'android:usesCleartextTraffic="true" android:debuggable="true"' : 'android:usesCleartextTraffic="false"');
   writeFileSync(manifest, content);
-  writeFileSync(join(java, 'BuildConfig.java'), `package ${namespace};\nfinal class BuildConfig { static final boolean DEBUG = ${debug}; static final String VERSION_NAME = "${version}"; }\n`);
+  writeFileSync(join(java, 'BuildConfig.java'), `package ${namespace};\nfinal class BuildConfig { static final boolean DEBUG = ${debug}; static final String VERSION_NAME = "${version}"; static final String CHAT_ORIGIN = ${JSON.stringify(chatOrigin)}; }\n`);
   const zip = join(build, 'resources.zip'), apk = join(build, 'base.apk'), aligned = join(build, 'aligned.apk');
   run(buildTool('aapt2'), ['compile', '--dir', resources, '-o', zip]);
   run(buildTool('aapt2'), ['link', '-o', apk, '-I', androidJar, '--manifest', manifest, '--custom-package', namespace,
@@ -91,7 +93,7 @@ try {
     '--ks-pass', 'env:TSUKIAKARI_ANDROID_SIGN_SECRET', '--out', targetFile, aligned], { env: signingEnv });
   run(apksigner[0], [...apksigner.slice(1), 'verify', '--verbose', targetFile]);
   const hash = createHash('sha256').update(readFileSync(targetFile)).digest('hex');
-  writeFileSync(join(output, 'android-build.json'), JSON.stringify({ targetFile, version, package: pkg, min, target, debug, sha256: hash }, null, 2));
+  writeFileSync(join(output, 'android-build.json'), JSON.stringify({ targetFile, version, package: pkg, min, target, debug, chatOrigin, sha256: hash }, null, 2));
   console.log('安卓测试包已签名并验证 · ' + targetFile);
 } finally {
   const target = realpathSync(resolve(build));

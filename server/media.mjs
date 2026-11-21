@@ -275,7 +275,7 @@ function getRange(range, size) {
   return start < size && start <= end ? [start, end] : null;
 }
 
-export async function sendMedia(db, req, res, id, thumbnail) {
+export async function sendMedia(db, req, res, id, thumbnail, privateAccess = false) {
   const meta = db.prepare('SELECT mime, size, length(thumb) AS thumb_size, preview_version, published FROM media WHERE id = ?').get(id);
   const variant = typeof thumbnail === 'number' && db.prepare('SELECT length(data) AS size FROM media_previews WHERE media_id = ? AND width = ?').get(id, thumbnail);
   if (typeof thumbnail === 'number') check(variant, '没有找到此尺寸预览。', 404, 'not_found');
@@ -284,7 +284,7 @@ export async function sendMedia(db, req, res, id, thumbnail) {
   const etag = `"${id}${thumbnail ? '-p' + meta.preview_version + '-' + thumbnail : ''}"`;
   const headers = {
     'Content-Type': thumbnail ? 'image/webp' : meta.mime,
-    'Cache-Control': meta.published ? 'public, max-age=31536000, immutable' : 'private, no-store',
+    'Cache-Control': meta.published && !privateAccess ? 'public, max-age=31536000, immutable' : 'private, no-store',
     'Accept-Ranges': 'bytes',
     ETag: etag,
   };

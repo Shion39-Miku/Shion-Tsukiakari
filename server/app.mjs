@@ -16,6 +16,7 @@ import { batchDetails, deleteDraftObject, draftDetails, editItem, listDrafts, ma
 import { clientIP, locationLookup } from './location.mjs';
 import { createChat } from './chat.mjs';
 import { canReadChatFile } from './chat-access.mjs';
+import { retainedAfter } from './chat-retention.mjs';
 import { createSiteBridge } from './site-bridge.mjs';
 
 const publicDir = resolve(root, 'public');
@@ -96,6 +97,7 @@ export async function createApplication(config) {
     readFile(resolve(publicDir, 'chat.html'), 'utf8'),
   ]);
   const db = openDatabase(config.dbPath);
+  if (!config.disableChat) db.exec('PRAGMA secure_delete = ON');
   const lookupLocation = locationLookup(db, config);
   try {
     await initializeSettings(db, config);
@@ -108,7 +110,7 @@ export async function createApplication(config) {
     throw error;
   }
   let uploads = 0;
-  if(config.websiteUrl)config={...config,siteBridge:createSiteBridge({baseUrl:config.websiteUrl,eventToken:config.websiteEventToken,db})};
+  if(config.websiteUrl)config={...config,siteBridge:createSiteBridge({baseUrl:config.websiteUrl,eventToken:config.websiteEventToken,db,chatClock:config.chatClock})};
   const chat = config.disableChat ? {handle:async()=>false,close(){}} : createChat(db, config, json);
   let loginRequests = 0;
   const streams = new Set();
@@ -227,7 +229,11 @@ export async function createApplication(config) {
           const id = assertId(media[1]);
           const meta = db.prepare('SELECT published FROM media WHERE id = ?').get(id);
           check(meta, '没有找到媒体。', 404, 'not_found');
-          if(path.startsWith('/chat-media/')){const account=requireAccount(db,req);check(canReadChatFile(db,account.key,id),'无权读取此聊天文件。',403,'private_media');}
+          if (path.startsWith('/chat-media/')) {
+            const account = requireAccount(db, req);
+            check(canReadChatFile(db, account.key, id, retainedAfter(config.chatClock)), '无权读取此聊天文件。', 403, 'private_media');
+            return await sendMedia(db, req, res, id, media[3] ? Number(media[3]) : Boolean(media[2]), true);
+          }
           if (!meta.published) {
             if (req.headers.authorization) {
               const bot = requireBot(config.bots, req);
@@ -241,7 +247,7 @@ export async function createApplication(config) {
               check(!config.disableChat||!staged?.actor.startsWith('chat:'),'聊天媒体仅由软件后端提供。',403,'private_media');
               if (account.role !== 'admin' || staged?.actor.startsWith('chat:')) {
                 const businessReview = account.role === 'admin' && db.prepare("SELECT 1 FROM drafts WHERE state!='deleted' AND document LIKE ? LIMIT 1").get('%' + id + '%');
-                check(canReadChatFile(db, account.key, id) || businessReview, '此文件不属于当前会话。', 403, 'private_media');
+                check(canReadChatFile(db, account.key, id, retainedAfter(config.chatClock)) || businessReview, '此文件不属于当前会话。', 403, 'private_media');
               }
             }
           }

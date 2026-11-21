@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileDigest, root, SecurityError, toolsDir } from './security-tools.mjs';
+import { androidChatOrigin } from './android-release-config.mjs';
 
 function run(tool, args, cwd) {
   const result = spawnSync(tool, args, { cwd, windowsHide: true, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
@@ -25,7 +26,8 @@ export async function checkAndroid({ scan, protectedPath }) {
     const folder = join(artifacts, version + (debug ? '-qa' : ''));
     const apk = join(folder, 'Tsukiakari-' + version + (debug ? '-QA' : '-Android') + '.apk');
     const manifest = JSON.parse(readFileSync(join(folder, 'android-build.json'), 'utf8'));
-    if (realpathSync(folder) !== folder || !lstatSync(apk).isFile() || await fileDigest(apk) !== manifest.sha256) {
+    const origin = androidChatOrigin(debug);
+    if (realpathSync(folder) !== folder || !lstatSync(apk).isFile() || await fileDigest(apk) !== manifest.sha256 || manifest.chatOrigin !== origin) {
       throw new SecurityError('APK 路径或 SHA-256 与构建清单不符。');
     }
     run(jdk('java'), ['-jar', join(buildTools, 'lib/apksigner.jar'), 'verify', apk]);
@@ -46,6 +48,9 @@ export async function checkAndroid({ scan, protectedPath }) {
     const extracted = mkdtempSync(join(toolsCache, 'android-audit-'));
     try {
       run(jdk('jar'), ['--extract', '--file', apk], extracted);
+      const code = readFileSync(join(extracted, 'classes.dex'));
+      if (!code.includes(Buffer.from(origin)) || code.includes(Buffer.from('https://chat.example.org')) ||
+          !debug && code.includes(Buffer.from('http://127.0.0.1:'))) throw new SecurityError('APK 内置聊天地址与发布策略不符。');
       scan(['dir', extracted]);
     } finally {
       const resolved = realpathSync(extracted);

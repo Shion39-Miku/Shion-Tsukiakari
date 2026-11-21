@@ -1,7 +1,7 @@
 import { check, cleanText, consumeQuota, idPattern, newId, now, transaction } from './core.mjs';
 import { readJson } from './media.mjs';
 
-export function createSocial(db, { emit, own, invalidate = () => {} }) {
+export function createSocial(db, { emit, own, cutoff, invalidate = () => {} }) {
   const serviceDefaults=()=>JSON.parse(db.prepare("SELECT value FROM app_flags WHERE key='tsukiakari-service'").get()?.value||'{}');
   const live = new Map();
   let closed = false;
@@ -179,7 +179,7 @@ export function createSocial(db, { emit, own, invalidate = () => {} }) {
       if(['PATCH','GET'].includes(method)){const p=db.prepare('SELECT * FROM chat_client_preferences WHERE account_key=?').get(session.key);json(res,{item:{sound:p?!!p.sound:serviceDefaults().defaultSound!==false,taskbar:p?!!p.taskbar:serviceDefaults().defaultTaskbar!==false,desktop:p?!!p.desktop:serviceDefaults().defaultDesktop!==false}});return true;}
     }
     if(path==='/api/chat/notifications/claim' && method==='POST'){
-      const data=await readJson(req);const row=db.prepare('SELECT * FROM chat_messages WHERE id=?').get(Number(data.messageId));check(row,'消息不存在。',404);own(session,row.thread_id);
+      const data=await readJson(req);const row=db.prepare('SELECT * FROM chat_messages WHERE id=? AND created_at>?').get(Number(data.messageId),cutoff());check(row,'消息不存在。',404);own(session,row.thread_id);
       const read=db.prepare('SELECT 1 FROM chat_message_reads WHERE account_key=? AND message_id=?').get(session.key,row.id);
       let claimed=false;if(row.sender_key!==session.key && row.status==='complete' && !read)claimed=!!db.prepare('INSERT INTO chat_notification_claims VALUES(?,?,?) ON CONFLICT DO NOTHING').run(session.key,row.id,now()).changes;
       const p=db.prepare('SELECT sound,taskbar,desktop FROM chat_client_preferences WHERE account_key=?').get(session.key);json(res,{notify:claimed,preferences:{sound:p?!!p.sound:serviceDefaults().defaultSound!==false,taskbar:p?!!p.taskbar:serviceDefaults().defaultTaskbar!==false,desktop:p?!!p.desktop:serviceDefaults().defaultDesktop!==false},item:claimed?{messageId:row.id,threadId:row.thread_id,sender:profile(row.sender_key,session.key)?.displayName || row.sender_name,body:row.body.slice(0,140)}:null});return true;

@@ -1,5 +1,5 @@
-import { closeSync, existsSync, mkdirSync, openSync, unlinkSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, rmdirSync, unlinkSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { backup, DatabaseSync } from 'node:sqlite';
@@ -9,6 +9,7 @@ import { setAdmin } from '../server/auth.mjs';
 import { seedDemo } from '../server/demo.mjs';
 import { regeneratePreviews } from '../server/media.mjs';
 import { migrateMediaMetadata } from '../server/media-maintenance.mjs';
+import { pruneChat } from '../server/chat-retention.mjs';
 
 async function promptPassword() {
   if (!stdin.isTTY) throw new Error('请在交互式终端运行，或设置 ADMIN_PASSWORD 环境变量。');
@@ -25,7 +26,7 @@ async function promptPassword() {
 
 async function snapshot(db, destination) {
   mkdirSync(dirname(destination), { recursive: true });
-  closeSync(openSync(destination, 'wx'));
+  closeSync(openSync(destination, 'wx', 0o600));
   try {
     await backup(db, destination);
   } catch (error) {
@@ -49,16 +50,39 @@ async function main() {
         || !source.prepare('SELECT name FROM schema_migrations LIMIT 1').get()) {
         throw new Error('备份未通过完整性或迁移检查。');
       }
-      await snapshot(source, dbPath);
-      console.log(`已恢复至 ${dbPath}。`);
+      mkdirSync(dirname(dbPath), { recursive: true });
+      const work = mkdtempSync(join(dirname(dbPath), '.tsukiakari-restore-'));
+      const prepared = join(work, 'restored.sqlite');
+      try {
+        await snapshot(source, prepared);
+        const restored = openDatabase(prepared);
+        try {
+          restored.exec('PRAGMA secure_delete = ON');
+          await pruneChat(restored);
+          restored.exec('DELETE FROM chat_sessions; DELETE FROM sessions; VACUUM; PRAGMA wal_checkpoint(TRUNCATE)');
+          if (restored.prepare('PRAGMA foreign_key_check').get()) throw new Error('恢复副本的关联完整性检查失败。');
+        } finally { restored.close(); }
+        // A hard link publishes the completed file atomically and refuses an existing destination.
+        linkSync(prepared, dbPath);
+        console.log(`已清理到期消息并恢复至 ${dbPath}。`);
+      } finally {
+        for (const file of [prepared, prepared + '-wal', prepared + '-shm']) if (existsSync(file)) unlinkSync(file);
+        rmdirSync(work);
+      }
     } finally {
       source.close();
     }
     return;
   }
-  if (!['migrate', 'seed', 'admin', 'backup', 'previews'].includes(command)) throw new Error('可用命令为 migrate、seed、admin、backup、restore、previews。');
+  if (!['migrate', 'seed', 'admin', 'backup', 'previews', 'chat-prune'].includes(command)) throw new Error('可用命令为 migrate、seed、admin、backup、restore、previews、chat-prune。');
+  if (command === 'chat-prune' && !existsSync(dbPath)) throw new Error('聊天数据库路径不存在，请核对 DATABASE_PATH。');
   const db = openDatabase(dbPath);
   try {
+    if (command === 'chat-prune') {
+      db.exec('PRAGMA secure_delete = ON');
+      console.log(JSON.stringify(await pruneChat(db)));
+      return;
+    }
     migrateMediaMetadata(db);
     if (command === 'migrate') console.log(`迁移完成 ${dbPath}`);
     if (command === 'previews') console.log('已从原图重新生成 ' + await regeneratePreviews(db, true) + ' 组高清预览，刷新前台即可更新。');

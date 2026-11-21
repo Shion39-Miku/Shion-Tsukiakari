@@ -50,7 +50,7 @@ test('migration preserves old records, migrates background defaults and fills pu
   assert.equal(db.prepare('SELECT synced_at FROM batches').get().synced_at, '2026-01-01T00:00:00.000Z');
   assert.equal(JSON.parse(db.prepare('SELECT document FROM drafts').get().document).fields.volume, '0.05');
   assert.equal(db.prepare('SELECT volume FROM background_tracks').get().volume, .05);
-  assert.equal(db.prepare('SELECT name FROM schema_migrations ORDER BY name DESC LIMIT 1').get().name, '007-chat-social.sql'); db.close();
+  assert.equal(db.prepare('SELECT name FROM schema_migrations ORDER BY name DESC LIMIT 1').get().name, '008-chat-retention-and-sync.sql'); db.close();
   for (const part of [file, file + '-wal', file + '-shm']) await rm(part, { force: true }); await rmdir(directory);
 });
 

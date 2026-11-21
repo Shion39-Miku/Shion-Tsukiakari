@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { _android as android } from 'playwright';
+import { _android as android, _electron as electron } from 'playwright';
 import { androidFixture } from './android-fixture.mjs';
+import { androidChatOrigin } from './android-release-config.mjs';
 
 const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
 assert.ok(sdk, 'Set ANDROID_HOME before running the device check.');
@@ -55,11 +57,10 @@ async function tapNode(label) {
   await shell('input', 'tap', ...center(row));
 }
 
-async function fillOrigin(address) {
-  await tapNode('聊天服务地址');
-  await shell('input', 'text', address);
-  await press(4);
-  await tapNode('继续登录');
+async function signIn(page, user) {
+  await page.getByRole('textbox', { name: '账号', exact: true }).fill(user.username);
+  await page.getByLabel('密码', { exact: true }).fill(user.password);
+  await page.getByRole('button', { name: '登录', exact: true }).click();
 }
 
 async function frameSample(page, scroll) {
@@ -83,10 +84,11 @@ async function frameSample(page, scroll) {
 }
 
 await mkdir(screens, { recursive: true });
-const fixture = await androidFixture(folder);
-const port = new URL(fixture.origin).port;
+const port = new URL(androidChatOrigin(true)).port;
+const fixture = await androidFixture(folder, { port: Number(port) });
 let device;
 let page;
+let desktop;
 let originalFontScale;
 let secureHidden = false;
 async function webview() {
@@ -110,22 +112,26 @@ try {
   await shell('input', 'keyevent', '82');
   await adb(['reverse', 'tcp:' + port, 'tcp:' + port]);
   for (const apk of binaries) assert.match(await adb(['install', '-r', apk], { timeout: 70000 }), /Success/);
-  stage = 'HTTPS variant rejects HTTP';
+  stage = 'HTTPS variant starts at credential login';
   await start(secure);
-  await fillOrigin(fixture.origin);
-  await until(async () => (await nodes()).some(node => node[0].includes('填写 HTTPS 服务根地址')), 'HTTPS policy did not reject HTTP.');
+  const loginScreen = await until(async () => {
+    const ui = (await nodes()).map(node => node[0]).join('\n');
+    return ui.includes('登录月明かり') && ui.includes('记住登录状态') && ui;
+  }, 'Fresh production install did not open its credential screen');
+  assert.doesNotMatch(loginScreen, /连接你的聊天服务|聊天服务地址|继续登录/);
+  await snap('android-login');
   await shell('am', 'force-stop', secure);
-  pass('两个 APK 安装成功，HTTPS 版拒绝明文地址');
+  pass('两个 APK 安装成功，标准版初次打开直接显示账号密码登录与记住登录状态');
 
   stage = 'phone and real Android bridge';
   const launched = await start();
   report.firstLaunchMs = Number(launched.match(/TotalTime: (\d+)/)?.[1] || 0);
-  await fillOrigin(fixture.origin);
   page = await webview();
   page.setDefaultTimeout(18000);
-  await page.getByRole('textbox', { name: '账号', exact: true }).fill(fixture.member.username);
-  await page.getByLabel('密码', { exact: true }).fill(fixture.member.password);
-  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await page.getByRole('heading', { name: '登录月明かり' }).waitFor();
+  assert.match(page.url(), /^http:\/\/127\.0\.0\.1:\d+\/chat$/);
+  assert.equal(await page.getByRole('checkbox', { name: '记住登录状态' }).isChecked(), true);
+  await signIn(page, fixture.member);
   await page.locator('#app-boot').waitFor({ state: 'hidden' });
   const list = () => page.locator('.thread-list');
   const listing = title => list().getByRole('button', { name: title, exact: true });
@@ -181,6 +187,52 @@ try {
   await page.getByText(/演示回复/).last().waitFor();
   assert.deepEqual(fixture.calls, [fixture.assistant]);
   pass('大屏双栏及成员面板、缩放保留草稿、模拟 AstrBot 流式回复');
+
+  if (process.env.TSUKIAKARI_QA_ELECTRON === '1') {
+    stage = 'real Electron, Android and the same database';
+    const { prepareDesktop } = await import('./prepare-desktop.mjs');
+    const { desktop: project } = await prepareDesktop();
+    const env = { ...process.env, TSUKIAKARI_CHAT_SERVER_URL: fixture.origin, TSUKIAKARI_DESKTOP_DATA: join(folder, 'electron-demo-profile') };
+    delete env.ELECTRON_RUN_AS_NODE;
+    desktop = await electron.launch({ executablePath: createRequire(join(project, 'package.json'))('electron'), args: [project], env });
+    const workstation = await desktop.firstWindow();
+    workstation.setDefaultTimeout(18000);
+    await workstation.waitForURL(url => url.origin === fixture.origin && url.pathname === '/chat');
+    await signIn(workstation, fixture.member);
+    const enterChat = (surface, title) => surface.locator('.thread-list').getByRole('button', { name: title, exact: true }).click();
+    const sendFrom = async (surface, text) => {
+      await surface.getByRole('textbox', { name: '聊天消息' }).fill(text);
+      await surface.getByRole('button', { name: '发送消息', exact: true }).click();
+    };
+    const expectOne = async (surface, text) => {
+      const entry = surface.locator('#message-list').getByText(text, { exact: true });
+      await entry.waitFor(); assert.equal(await entry.count(), 1);
+    };
+    await filter('好友').click();
+    await Promise.all([enterChat(page, '晚灯 · 演示'), enterChat(workstation, '晚灯 · 演示')]);
+    await sendFrom(workstation, '从桌面发来的月光。');
+    await expectOne(page, '从桌面发来的月光。');
+    await sendFrom(page, '从安卓发来的星光。');
+    await expectOne(workstation, '从安卓发来的星光。');
+    await page.context().setOffline(true);
+    await sendFrom(workstation, '断网时留下的一条消息。');
+    await expectOne(workstation, '断网时留下的一条消息。');
+    await page.context().setOffline(false);
+    await expectOne(page, '断网时留下的一条消息。');
+    await composer().fill('系统重开后仍在的演示草稿。');
+    await filter('AI').click();
+    await Promise.all([enterChat(page, '知遥的夜话'), enterChat(workstation, '知遥的夜话')]);
+    await sendFrom(workstation, '请让两台设备听见演示回复。');
+    await expectOne(page, '请让两台设备听见演示回复。');
+    await until(async () => await page.locator('#message-list').getByText(/演示回复/).count() === 2, 'AI reply did not reach Android');
+    assert.deepEqual(fixture.calls, [fixture.assistant, fixture.assistant]);
+    await filter('群聊').click();
+    await Promise.all([enterChat(page, '月下茶话'), enterChat(workstation, '月下茶话')]);
+    await sendFrom(page, '安卓和桌面都能看到这一条群消息。');
+    await expectOne(workstation, '安卓和桌面都能看到这一条群消息。');
+    await desktop.close(); desktop = null;
+    pass('原生 Electron 与安卓共用演示账号和数据库，双向私聊、群聊、AI 回复与断网补齐无重复');
+  }
 
   stage = 'notification permission and background delivery';
   // Marking read covers completed messages. Wait for the streaming reply to finish
@@ -289,6 +341,19 @@ try {
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   pass('系统字号设为 130% 后正文版面无横向溢出，切回手机宽度保留草稿');
 
+  stage = 'account switch';
+  await my().click();
+  await page.getByRole('button', { name: '退出登录', exact: true }).click();
+  await page.getByRole('dialog', { name: '退出登录' }).getByRole('button', { name: '退出登录', exact: true }).click();
+  await page.getByRole('heading', { name: '登录月明かり' }).waitFor();
+  await signIn(page, fixture.peer);
+  await listing('星野 澄月 · 演示').waitFor();
+  assert.equal(await listing('知遥的夜话').count(), 0);
+  await listing('星野 澄月 · 演示').click();
+  assert.equal(await composer().inputValue(), '');
+  assert.deepEqual([...await chatNotices()], []);
+  pass('退出后切换账号，隔离私有会话、草稿和系统通知');
+
   stage = 'launcher long-press menu';
   await shell('pm', 'disable-user', '--user', '0', secure);
   secureHidden = true;
@@ -329,6 +394,7 @@ try {
   throw Error(String(error.message).replaceAll(fixture.member.password, '[demo secret]').replaceAll(fixture.origin, '[demo service]'));
 } finally {
   await device?.close().catch(() => {});
+  await desktop?.close().catch(() => {});
   await fixture.close();
   if (secureHidden) await shell('pm', 'enable', secure).catch(() => {});
   if (/^\d+(?:\.\d+)?$/.test(originalFontScale)) await shell('settings', 'put', 'system', 'font_scale', originalFontScale).catch(() => {});
