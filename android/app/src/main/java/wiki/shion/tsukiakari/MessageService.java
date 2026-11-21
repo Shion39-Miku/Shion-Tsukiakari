@@ -198,10 +198,13 @@ public final class MessageService extends Service {
         }
         if (info.unread() == 0 || info.kind().equals("group") && !device.flag(owner, "groups") || !current(origin, owner)) return;
         long message = item.getLong("id");
-        JSONObject claim = Endpoint.json(origin, "/api/chat/notifications/claim", csrf, new JSONObject().put("messageId", message));
+        JSONObject claim;
+        try { claim = Endpoint.json(origin, "/api/chat/notifications/claim", csrf, new JSONObject().put("messageId", message)); }
+        catch (Endpoint.Reply denied) { if (denied.status == 404) return; throw denied; }
         if (!claim.optBoolean("notify") || !current(origin, owner)) return;
         JSONObject display = claim.getJSONObject("item");
-        Notice.message(this, device, owner, id, info.kind(), info.title(), display.optString("sender"), display.optString("body"), message, info.unread(), catchUp);
+        Notice.message(this, device, owner, id, info.kind(), info.title(), display.optString("sender"), display.optString("body"), message,
+            info.unread(), catchUp, display.optLong("expiresInMs", 24 * 60 * 60 * 1000L));
     }
 
     @Override public void onDestroy() {

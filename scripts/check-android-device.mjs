@@ -92,9 +92,11 @@ let desktop;
 let originalFontScale;
 let secureHidden = false;
 async function webview() {
+  const pid = await until(async () => (await shell('pidof', qa)).match(/^\s*(\d+)\b/)?.[1], 'The QA activity has no process');
+  const socketName = 'webview_devtools_remote_' + pid;
   device = (await android.devices()).find(candidate => candidate.serial() === serial);
   assert.ok(device, 'Playwright cannot see the emulator via ADB.');
-  const view = await device.webView({ pkg: qa }, { timeout: 32000 });
+  const view = await device.webView({ socketName }, { timeout: 32000 });
   return view.page();
 }
 
@@ -131,6 +133,8 @@ try {
   await page.getByRole('heading', { name: '登录月明かり' }).waitFor();
   assert.match(page.url(), /^http:\/\/127\.0\.0\.1:\d+\/chat$/);
   assert.equal(await page.getByRole('checkbox', { name: '记住登录状态' }).isChecked(), true);
+  await page.locator('#app-boot').waitFor({ state: 'hidden' });
+  await snap('android-login-ready');
   await signIn(page, fixture.member);
   await page.locator('#app-boot').waitFor({ state: 'hidden' });
   const list = () => page.locator('.thread-list');
@@ -380,6 +384,8 @@ try {
   const visible = (await nodes().catch(() => [])).map(node => node[0]);
   const known = ['继续登录', '填写 HTTPS 服务根地址', '正在检查聊天服务', '此地址没有月明かり聊天接口', '暂时连不上聊天服务', '登录月明かり'];
   report.nativeSurface = known.filter(label => visible.some(node => node.includes(label)));
+  report.qaProcess = /^\s*\d+/.test(await shell('pidof', qa).catch(() => ''));
+  report.webViewSocket = /@webview_devtools_remote_\d+/.test(await shell('cat', '/proc/net/unix').catch(() => ''));
   report.pageSurface = await page?.evaluate(({ owner, id }) => ({
     loggedIn: document.querySelector('#app-shell')?.hidden === false,
     signIn: document.querySelector('#app-login')?.hidden === false,

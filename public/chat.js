@@ -1159,7 +1159,11 @@ function openChatEvents() {
     scheduleThreads();
     scheduleActiveRefresh();
   });
-  stream.addEventListener('retention', event => { if (source === stream && session) applyRetention(JSON.parse(event.data).retainedAfter); });
+  stream.addEventListener('retention', event => {
+    if (source !== stream || !session) return;
+    applyRetention(JSON.parse(event.data).retainedAfter);
+    void renewSession();
+  });
   stream.addEventListener('message', event => {
     if (source !== stream || !session) return;
     const value = JSON.parse(event.data);

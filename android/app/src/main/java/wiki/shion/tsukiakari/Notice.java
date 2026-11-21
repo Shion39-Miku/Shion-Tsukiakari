@@ -46,8 +46,8 @@ final class Notice {
     }
 
     static void message(Context ctx, Device device, String owner, String id, String kind, String title, String sender,
-                        String body, long through, int unread, boolean catchUp) {
-        if (!device.allowed() || device.flag(owner, "quiet") || !owner.equals(device.owner())) return;
+                        String body, long through, int unread, boolean catchUp, long expiresInMs) {
+        if (expiresInMs <= 0 || !device.allowed() || device.flag(owner, "quiet") || !owner.equals(device.owner())) return;
         if (kind.equals("group") && !device.flag(owner, "groups")) return;
         boolean preview = device.flag(owner, "preview");
         String channel = channel(ctx, !catchUp && device.flag(owner, "sound"), !catchUp && device.flag(owner, "vibrate"));
@@ -71,7 +71,7 @@ final class Notice {
             .setContentText(text).setStyle(new Notification.BigTextStyle().bigText(text))
             .setCategory(Notification.CATEGORY_MESSAGE).setVisibility(preview ? Notification.VISIBILITY_PUBLIC : Notification.VISIBILITY_PRIVATE)
             .setPublicVersion(preview ? null : publicNotice).setNumber(unread).setContentIntent(content).setAutoCancel(true)
-            .addAction(command.build()).addExtras(extra).setOnlyAlertOnce(catchUp).build();
+            .addAction(command.build()).addExtras(extra).setOnlyAlertOnce(catchUp).setTimeoutAfter(expiresInMs).build();
         manager(ctx).notify(tag(id), CHAT_ID, message);
     }
 

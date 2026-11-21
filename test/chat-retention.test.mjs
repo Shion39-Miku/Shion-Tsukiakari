@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { backup } from 'node:sqlite';
 import { test } from 'node:test';
+import { setTimeout as wait } from 'node:timers/promises';
 import sharp from 'sharp';
 import { createApplication } from '../server/app.mjs';
 import { setChatAccount } from '../server/auth.mjs';
@@ -141,6 +142,25 @@ test('shared chat sessions, revision cursor and strict 30-day retention', { time
       assert.equal(restored.prepare('SELECT count(*) AS n FROM chat_sessions').get().n, 0);
       assert.equal(restored.prepare('PRAGMA foreign_key_check').get(), undefined);
     } finally { restored.close(); }
+    const target = join(dir, 'chat-backups');
+    const staleBackup = 'moonlit-chat-2000-01-01T00-00-00-000Z', siteBackup = 'moonlit-2000-01-01T00-00-00-000Z';
+    for (const name of [staleBackup, siteBackup]) {
+      await mkdir(join(target, name), { recursive: true });
+      await writeFile(join(target, name, '.complete'), 'test fixture');
+    }
+    execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', 'scripts/production-backup.mjs'], { cwd: root,
+      env: { ...process.env, DATABASE_PATH: restoreSource, SERVICE_MODE: 'chat', BACKUP_DIR: target, BACKUP_KEEP_DAYS: '3',
+        CONFIG_BACKUP_PATHS: '[]', BOT_BACKUP_DIRS: '[]', UPLOAD_TEMP_DIR: dir }, timeout: 10000 });
+    const names = await readdir(target);
+    assert.ok(names.includes(siteBackup)); assert.ok(!names.includes(staleBackup));
+    const created = names.find(name => name.startsWith('moonlit-chat-'));
+    assert.ok(created);
+    const backupDb = openDatabase(join(target, created, 'database.sqlite'));
+    try {
+      assert.equal(backupDb.prepare('SELECT id FROM chat_messages WHERE id=?').get(old.id), undefined);
+      assert.ok(backupDb.prepare('SELECT id FROM media WHERE id=?').get(avatar));
+      assert.equal(backupDb.prepare('SELECT count(*) AS n FROM chat_sessions').get().n, 0);
+    } finally { backupDb.close(); }
   });
 
   await t.test('revision catches changes to old IDs and pages until all devices agree', async () => {
@@ -160,7 +180,11 @@ test('shared chat sessions, revision cursor and strict 30-day retention', { time
     const current = (await request(direct, { as: moon })).value;
     assert.equal((await request(direct + '?before=' + current.before, { as: moon })).value.messages.length, 6);
     assert.deepEqual((await request(direct + '/sync?cursor=' + (last.cursor + 2), { as: moon })).value.reset, true);
+    const dated = new Date(edge).toISOString();
+    const legacyExpired = add.run(direct.split('/').at(-1), moon.account.key, '启动后要清理的演示消息', dated, dated).lastInsertRowid;
     await stop(); await start();
+    for (let attempt = 0; attempt < 80 && db.prepare('SELECT 1 FROM chat_messages WHERE id=?').get(legacyExpired); attempt++) await wait(20);
+    assert.equal(db.prepare('SELECT 1 FROM chat_messages WHERE id=?').get(legacyExpired), undefined);
     assert.deepEqual((await request(direct + '/sync?cursor=' + last.cursor, { as: secondMoon })).value.messages, []);
     assert.equal((await send(direct, moon, oldBody, oldKey)).status, 410);
     assert.equal((await request('/chat-media/' + sharedFile, { as: star })).status, 200);
