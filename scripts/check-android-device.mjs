@@ -183,9 +183,14 @@ try {
   pass('大屏双栏及成员面板、缩放保留草稿、模拟 AstrBot 流式回复');
 
   stage = 'notification permission and background delivery';
-  // Privacy previews are identical across chats. Prepare a single unread sender for the system tap.
+  // Marking read covers completed messages. Wait for the streaming reply to finish
+  // before isolating the chat whose privacy preview the test will tap.
+  await until(async () => (await fixture.moon('/api/chat/threads/' + fixture.assistant)).value.messages
+    .some(message => message.role === 'assistant' && message.status === 'complete' && message.body.includes('〔演示回复〕')),
+  'The demo assistant did not finish streaming');
   for (const id of [fixture.direct, fixture.group, fixture.assistant]) {
     assert.equal((await fixture.moon('/api/chat/threads/' + id + '/read', 'POST')).status, 200);
+    assert.equal((await fixture.moon('/api/chat/threads/' + id)).value.item.unread, 0);
   }
   await my().click();
   await page.locator('.page-nav').getByRole('button', { name: '设备通知', exact: true }).click();
@@ -197,15 +202,19 @@ try {
   await page.getByRole('button', { name: '保存设备设置' }).click();
   await page.getByText('设备设置已保存。', { exact: true }).waitFor();
   await press(3);
-  const count = async () => (await shell('dumpsys', 'notification', '--noredact')).split(/\r?\n/).find(line => line.includes('NotificationRecord(') && line.includes(qa) && line.includes('chat:' + fixture.direct));
+  const chatNotices = async () => new Set((await shell('dumpsys', 'notification')).split(/\r?\n/)
+    .filter(line => line.includes('NotificationRecord(') && line.includes(qa))
+    .map(line => line.match(/chat:([0-9a-f-]{36})/)?.[1]).filter(Boolean));
+  const receivedDirect = async () => (await chatNotices()).has(fixture.direct);
   const send = async note => assert.equal((await fixture.stars('/api/chat/threads/' + fixture.direct + '/messages', 'POST', { text: note })).status, 201);
   await send('仅供验收的通知正文');
-  await until(count, 'System did not receive a chat notification', 35000);
+  await until(receivedDirect, 'System did not receive a chat notification', 35000);
   const notices = await shell('dumpsys', 'notification', '--noredact');
   assert.ok(notices.includes('月明かり收到一条新消息'));
   assert.ok(!notices.includes('仅供验收的通知正文'));
   pass('系统权限与后台消息到达有效，默认通知隐藏正文');
   stage = 'notification deep link and synced read';
+  assert.deepEqual([...await chatNotices()], [fixture.direct], 'Only the direct chat should have an active privacy preview');
   await shell('cmd', 'statusbar', 'expand-notifications');
   await tapNode('月明かり收到一条新消息');
   await until(async () => (await shell('dumpsys', 'activity', 'activities')).split(/\r?\n/).some(line => line.includes('topResumedActivity') && line.includes(qa)),
@@ -214,9 +223,9 @@ try {
   await until(async () => (await fixture.moon('/api/chat/threads/' + fixture.direct)).value.item.unread === 0, 'Unread not synchronized');
   await press(3);
   await send('下一张月下的来信');
-  await until(count, 'Second background message was not delivered', 35000);
+  await until(receivedDirect, 'Second background message was not delivered', 35000);
   await fixture.moon('/api/chat/threads/' + fixture.direct + '/read', 'POST');
-  await until(async () => !(await count()), 'Other device did not clear the notification');
+  await until(async () => !(await receivedDirect()), 'Other device did not clear the notification');
   pass('系统通知点按直达会话，并随另一客户端已读消失');
 
   stage = 'launcher and native uninstall';
