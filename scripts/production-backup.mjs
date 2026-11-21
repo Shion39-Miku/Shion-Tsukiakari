@@ -9,7 +9,8 @@ import { openDatabase, readConfig, root } from '../server/core.mjs';
 import { verifyMedia } from '../server/media-maintenance.mjs';
 import { pruneChat } from '../server/chat-retention.mjs';
 
-const chatBackup = process.env.SERVICE_MODE === 'chat';
+const config = readConfig();
+const chatBackup = config.serviceMode === 'chat';
 const base=resolve(process.env.BACKUP_DIR || (chatBackup ? '/var/lib/moonlit-chat-backups' : '/www/backup/moonlit'));
 const prefix = chatBackup ? 'moonlit-chat-' : 'moonlit-';
 const keep=Math.max(2,Math.min(30,Number(process.env.BACKUP_KEEP_COUNT)||3));
@@ -20,7 +21,7 @@ const configPaths=parse('CONFIG_BACKUP_PATHS', chatBackup ? [] : ['/etc/moonlit'
 await mkdir(base,{recursive:true,mode:0o700});await chmod(base,0o700);
 const directory=join(base,prefix+new Date().toISOString().replaceAll(':','-'));
 await mkdir(directory,{mode:0o700});
-const source=new DatabaseSync(readConfig().dbPath,{readOnly:true});
+const source=new DatabaseSync(config.dbPath,{readOnly:true});
 let temporary, completed = false;
 try {
  const size=source.prepare('PRAGMA page_count').get().page_count*source.prepare('PRAGMA page_size').get().page_size;

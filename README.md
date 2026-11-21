@@ -54,9 +54,13 @@
 | --- | --- |
 | ![通讯录浮窗](docs/images/contacts-window.png) | ![关闭月明かり](docs/images/close-options.png) |
 
-### Android 0.1.0
+### Android 0.1.1
 
-以下手机与平板布局来自 Android 15 模拟器，使用隔离的演示账号与消息。
+以下界面来自 Android 15 模拟器，使用隔离的演示账号与消息。
+
+| 首次启动 | 连接失败时重试 |
+| --- | --- |
+| ![账号密码登录](docs/images/android-login.png) | ![登录页重试](docs/images/android-login-retry.png) |
 
 | 手机会话列表 | 手机聊天 |
 | --- | --- |

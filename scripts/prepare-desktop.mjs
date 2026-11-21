@@ -8,7 +8,7 @@ import {copyProductionDependencies} from './copy-dependencies.mjs';
 import { root, readConfig, sha256 } from '../server/core.mjs';
 
 export async function prepareDesktop({ sharedChat = false } = {}) {
-  const config = readConfig(), desktop = join(root, 'desktop'), output = join(desktop, '.generated');
+  const desktop = join(root, 'desktop'), output = join(desktop, '.generated');
   const backend = join(output, 'backend'); await mkdir(backend, {recursive:true});
   const [dialog, dialogCss, preload] = await Promise.all([
     readFile(join(root, 'public/ui-dialog.js'), 'utf8'),

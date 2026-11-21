@@ -234,16 +234,22 @@ try {
     await Promise.all([enterChat(page, '月下茶话'), enterChat(workstation, '月下茶话')]);
     await sendFrom(page, '安卓和桌面都能看到这一条群消息。');
     await expectOne(workstation, '安卓和桌面都能看到这一条群消息。');
+    await until(() => fixture.calls.filter(thread => thread === fixture.group).length === 1, 'The invited group AI did not start');
     await desktop.close(); desktop = null;
     pass('原生 Electron 与安卓共用演示账号和数据库，双向私聊、群聊、AI 回复与断网补齐无重复');
   }
 
   stage = 'notification permission and background delivery';
-  // Marking read covers completed messages. Wait for the streaming reply to finish
-  // before isolating the chat whose privacy preview the test will tap.
-  await until(async () => (await fixture.moon('/api/chat/threads/' + fixture.assistant)).value.messages
-    .some(message => message.role === 'assistant' && message.status === 'complete' && message.body.includes('〔演示回复〕')),
-  'The demo assistant did not finish streaming');
+  // Read receipts cover complete messages. Let every reply, including the
+  // group assistant, finish before isolating a single background notification.
+  await until(async () => {
+    for (const id of new Set(fixture.calls)) {
+      const expected = fixture.calls.filter(thread => thread === id).length;
+      const history = (await fixture.moon('/api/chat/threads/' + id)).value.messages;
+      if (history.filter(message => message.role === 'assistant' && message.status === 'complete' && message.body.includes('〔演示回复〕')).length !== expected) return false;
+    }
+    return true;
+  }, 'The demo assistant did not finish streaming');
   for (const id of [fixture.direct, fixture.group, fixture.assistant]) {
     assert.equal((await fixture.moon('/api/chat/threads/' + id + '/read', 'POST')).status, 200);
     assert.equal((await fixture.moon('/api/chat/threads/' + id)).value.item.unread, 0);
