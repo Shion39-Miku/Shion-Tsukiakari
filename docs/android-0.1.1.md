@@ -7,7 +7,7 @@
 
 标准包预置 `https://shion.wiki`。本轮验收时该域名的聊天会话接口仍返回 404，正式账号登录需要先上线共享聊天路由。隔离演示可用独立的 QA 包验证。
 
-Android 15 模拟器和 Electron 实际窗口已在隔离库上同账号登录，验证双向私聊、群消息、AI 流式回复及断网补齐。测试使用模拟 AstrBot；真实云端人格由现有部署管理。[模拟器记录](https://github.com/Shion39-Miku/Shion-Tsukiakari/actions/runs/44887118685)
+Android 15 模拟器和 Electron 实际窗口已在隔离库上同账号登录，验证双向私聊、群消息、AI 流式回复及断网补齐。已验证进程重启恢复、账号切换、后台通知、跨端已读清除提示、平板布局和桌面彩蛋入口。AI 流式测试使用模拟 AstrBot。[模拟器记录](https://github.com/Shion39-Miku/Shion-Tsukiakari/actions/runs/44888150743)
 
 [账号登录](images/android-login.png) · [服务不可用时的重试](images/android-login-retry.png) · [手机聊天](images/android-phone-chat.png) · [平板群聊](images/android-tablet.png)
 
