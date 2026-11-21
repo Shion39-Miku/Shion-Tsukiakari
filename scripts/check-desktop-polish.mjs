@@ -172,7 +172,7 @@ export async function checkStartupPrompt({ launch, environment, out, report }) {
     await dialog.getByRole('button', { name: '退出软件', exact: true }).click();
     assert.equal((await stopped)[0], 0);
     const log = await readFile(join(data, 'desktop.log'), 'utf8');
-    assert.match(log, /远程聊天后端须为HTTPS站点根地址/);
+    assert.match(log, /远程聊天后端须为\s*HTTPS\s*站点根地址/);
     report.polish.startup = '启动配置错误使用应用内弹窗，可正常退出。错误原因保存在桌面日志';
   } finally { await app.close().catch(() => {}); }
 }

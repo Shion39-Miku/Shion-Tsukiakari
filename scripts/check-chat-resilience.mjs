@@ -37,9 +37,14 @@ export async function checkChatResilience({ app, page, member, api, nav, shot, f
   const composer = page.getByRole('textbox', { name: '聊天消息', exact: true });
   await page.bringToFront();
   await observeUi(page);
-  const snapshot = page.waitForResponse(r => r.url().endsWith(threadPath) && r.request().method() === 'GET');
+  const refresh = page.waitForResponse(response => {
+    if (response.request().method() !== 'GET' || !response.ok()) return false;
+    const { pathname, searchParams } = new URL(response.url());
+    if (baseline) return pathname === threadPath;
+    return pathname === threadPath + '/sync' && /^\d+$/.test(searchParams.get('cursor') || '');
+  });
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await snapshot;
+  await refresh;
   await page.waitForTimeout(350);
   const changes = await mutations(page);
   report.performance.focusRefreshMutations = changes;
