@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 已建立草稿预发布的标签，例如 v0.4.5
+        description: 已建立草稿预发布的标签，例如 v0.4.6
         type: string
         default: ''
 permissions:

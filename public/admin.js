@@ -6,6 +6,7 @@ import { workroom } from './workroom.js';
 import { draftControls, globalDraftBar } from './draft-controls.js';
 import { materialPicker } from './materials.js';
 import { readAudioTags, readLrcTags } from './metadata.js';
+import { signalWithTimeout } from './request-signal.js';
 
 const embedded = document.body.classList.contains('chat-body');
 const main = document.querySelector(embedded ? '#manage-main' : '#main');
@@ -589,7 +590,7 @@ function showWebsiteConnection(error, connectWebsite, epoch, preserveWorkspace =
     try {
       if (signedIn) await connectWebsite({ username: username.value.trim(), password: password.value });
       password.value = '';
-      const verified = await api('/api/admin/session', { signal: AbortSignal.timeout(10000) });
+      const verified = await api('/api/admin/session', { signal: signalWithTimeout(10000) });
       if (epoch !== mountEpoch) return;
       session = verified;
       if (preserveWorkspace) { form.parentElement.remove(); toast('网站后台已重新连接，可以继续保存。'); }
@@ -612,7 +613,7 @@ export async function mountAdmin({ connectWebsite } = {}) {
   drawHeader();
   main.replaceChildren(el('div', { class: 'frame admin-loading' }, empty('正在读取会话…')));
   try {
-    const next = await api('/api/admin/session', { signal: AbortSignal.timeout(10000) });
+    const next = await api('/api/admin/session', { signal: signalWithTimeout(10000) });
     if (epoch !== mountEpoch) return;
     session = next; showWorkspace();
   } catch (error) {

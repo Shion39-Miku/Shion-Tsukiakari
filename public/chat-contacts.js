@@ -1,4 +1,5 @@
 import { action, el, iconButton, showStatus, toast } from './ui.js';
+import { signalWithTimeout } from './request-signal.js';
 
 const labels = { friends: '好友', search: '搜索用户', requests: '好友申请', invitations: '群邀请' };
 const tabs = Object.keys(labels);
@@ -146,7 +147,7 @@ export function createContacts({ request, account, personRow, openThread, refres
     section.retry.hidden = true;
     showStatus(section.feedback, section.loaded ? '正在更新…' : '正在读取…');
     pending.promise = request(endpoints[section.name] + (term ? '?q=' + encodeURIComponent(term) : ''), {
-      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12000)]),
+      signal: signalWithTimeout(12000, controller.signal),
     }).then(result => {
       if (section.pending !== pending || stamp !== accountEpoch || pending.version !== section.version) return;
       draw(section, result.items);

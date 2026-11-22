@@ -13,7 +13,7 @@ await Promise.all([web, drawable, raw, join(web, 'assets/brand')].map(path => mk
 const sources = [
   'styles.css', 'admin.css', 'chat.css', 'chat-social.css', 'tsukiakari.css', 'ui-dialog.css', 'chat-android.css',
   'chat.js', 'chat-library.js', 'chat-render.js', 'chat-social.js', 'chat-pages.js', 'chat-android.js', 'chat-android-drafts.js',
-  'chat-contacts.js', 'ui.js', 'ui-dialog.js', 'copy.js', 'activity.js', 'player.js', 'lyrics.js', 'parse-lrc.js',
+  'chat-contacts.js', 'ui.js', 'ui-dialog.js', 'copy.js', 'activity.js', 'player.js', 'lyrics.js', 'parse-lrc.js', 'request-signal.js',
   'admin.js', 'workroom.js', 'uploads.js', 'draft-controls.js', 'materials.js', 'metadata.js',
 ];
 await Promise.all(sources.map(file => copyFile(join(root, 'public', file), join(web, file))));

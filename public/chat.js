@@ -8,6 +8,7 @@ import {createPages,personalSections,managementSections} from './chat-pages.js';
 import { hasDraftWork } from './draft-controls.js';
 import { androidClient } from './chat-android.js';
 import { attachmentBudget, readFiles, storeFiles } from './chat-android-drafts.js';
+import { signalWithTimeout } from './request-signal.js';
 
 const name = '月明かり';
 document.title = name;
@@ -48,7 +49,7 @@ async function request(path, options = {}) {
   const { json, key, ...rest } = options;
   let response;
   try {
-    response = await fetch(path, { signal: AbortSignal.timeout(45000), ...rest, cache: 'no-store', headers: {
+    response = await fetch(path, { ...rest, signal: rest.signal ?? signalWithTimeout(45000), cache: 'no-store', headers: {
       ...(json === undefined ? {} : { 'Content-Type': 'application/json' }), ...(key ? { 'Idempotency-Key': key } : {}),
       ...(session?.csrf ? { 'X-CSRF-Token': session.csrf } : {}), ...rest.headers,
     }, body: json === undefined ? rest.body : JSON.stringify(json) });
@@ -162,7 +163,7 @@ function showLogin(explicit = false, problem = null, probe = false) {
     const attempt = ++loginAttempt;
     submit.disabled = retry.disabled = true; showStatus(status, '正在核验账号…');
     try {
-      await request('/api/chat/login', { method: 'POST', signal: AbortSignal.timeout(15000),
+      await request('/api/chat/login', { method: 'POST', signal: signalWithTimeout(15000),
         json: { username: username.value.trim(), password: password.value, remember: remember.checked } });
       password.value = ''; await enter(attempt);
     } catch (error) { if (attempt === loginAttempt) loginError(error); }
@@ -552,7 +553,7 @@ async function loadOlder() {
   const controller = olderRequest = new AbortController();
   loadingOlder = true; updateOlderButton();
   try {
-    const result = await request('/api/chat/threads/' + id + '?before=' + before, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]) });
+    const result = await request('/api/chat/threads/' + id + '?before=' + before, { signal: signalWithTimeout(20000, controller.signal) });
     if (version !== routeVersion || id !== activeThread?.id) return;
     const oldHeight = conversation.scrollHeight;
     before = result.before;
@@ -567,7 +568,7 @@ async function loadOlder() {
   }
 }
 async function loadThread(id, { signal, version = routeVersion, replace = false } = {}) {
-  const result = await request('/api/chat/threads/' + id, { signal: signal || AbortSignal.timeout(20000) });
+  const result = await request('/api/chat/threads/' + id, { signal: signal || signalWithTimeout(20000) });
   if (version !== routeVersion || signal?.aborted || !session) return;
   const changed = activeThread?.id !== id;
   activeThread = result.item;
@@ -598,7 +599,7 @@ async function refreshActiveThread() {
   threadRefresh = job; catchingUp = true;
   const valid = () => version === routeVersion && id === activeThread?.id && !controller.signal.aborted && !windowHidden();
   const path = '/api/chat/threads/' + id;
-  const options = { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]) };
+  const options = { signal: signalWithTimeout(20000, controller.signal) };
   try {
     if (timelineCursor !== null) {
       let more;
@@ -911,7 +912,7 @@ async function sendMessage(event) {
   const mentionAssistant = !mention.closest('label').hidden && draft.mention;
   const controller = new AbortController(), ticket = { draft, controller };
   const valid = () => version === accountVersion && !controller.signal.aborted;
-  const options = { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]) };
+  const options = { signal: signalWithTimeout(45000, controller.signal) };
   activeSendTicket = ticket; draft.error = ''; reflectComposer();
   try {
     if (!draft.id) {
@@ -947,7 +948,7 @@ async function sendMessage(event) {
     }
     if (!valid()) return;
     const result = await request('/api/chat/threads/' + targetId + '/messages', {
-      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]),
+      signal: signalWithTimeout(45000, controller.signal),
       method: 'POST', json: { text, attachmentIds: ids, mentionAssistant }, key,
     });
     if (!valid()) return;
@@ -1077,7 +1078,7 @@ async function navigate(next, options = {}) {
     const controller = new AbortController();
     foregroundRequest = controller;
     try {
-      await loadThread(target, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]), version });
+      await loadThread(target, { signal: signalWithTimeout(20000, controller.signal), version });
       if (!isCurrent()) return;
       if (!options.fromHistory) writeRoute();
     } catch (error) {
@@ -1140,7 +1141,7 @@ async function renewSession() {
   const version = accountVersion;
   lastRenewAttempt = Math.max(1, performance.now());
   try {
-    await request('/api/chat/session/refresh', { method: 'POST', signal: AbortSignal.timeout(12000) });
+    await request('/api/chat/session/refresh', { method: 'POST', signal: signalWithTimeout(12000) });
     if (version === accountVersion) android?.sessionRefreshed();
   } catch { if (version === accountVersion) lastRenewAttempt = 0; }
 }
@@ -1221,7 +1222,7 @@ async function refreshNotices() {
   finally { if (session?.key === owner) syncingNotices = false; }
 }
 async function enter(attempt = ++loginAttempt) {
-  const value = await request('/api/chat/session', { signal: AbortSignal.timeout(12000) });
+  const value = await request('/api/chat/session', { signal: signalWithTimeout(12000) });
   if (attempt !== loginAttempt) return;
   if (!value.key) throw new Error('聊天服务暂未就绪，请稍后重试。');
   session = value;

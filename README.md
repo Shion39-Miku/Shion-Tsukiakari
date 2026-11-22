@@ -6,9 +6,9 @@
 
 **0.4.2** 放大聊天文字，修复会话分类与通讯录切换时的闪烁。通讯录和关闭提示使用应用内浮窗。见[版本说明](docs/maintenance-0.4.2.md)。
 
-**0.4.5 预发布**统一提供 Android、Windows 安装包和校验文件。安卓打开后直接登录，同一账号的会话、聊天和已读状态由共享后端同步。服务器保留最近30天聊天记录。 [发布说明](docs/release-0.4.5.md) · [安卓指南](docs/android.md)
+**0.4.6 预发布**提供 Android、Windows 安装包和校验文件，并修复旧版 Android System WebView 的登录兼容性。同一账号的会话、聊天和已读状态由共享后端同步。服务器保留最近30天聊天记录。 [发布说明](docs/release-0.4.6.md) · [安卓指南](docs/android.md)
 
-[下载 Android APK](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.5/Tsukiakari-0.4.5-Android.apk) · [Windows 安装版](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.5/Tsukiakari-0.4.5-Setup.exe) · [Windows 免安装版](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.5/Tsukiakari-0.4.5-Portable.exe) · [SHA-256 校验](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.5/SHA256SUMS.txt)
+[下载 Android APK](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.6/Tsukiakari-0.4.6-Android.apk) · [Windows 安装版](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.6/Tsukiakari-0.4.6-Setup.exe) · [Windows 免安装版](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.6/Tsukiakari-0.4.6-Portable.exe) · [SHA-256 校验](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.6/SHA256SUMS.txt)
 
 ## 功能
 
@@ -21,7 +21,7 @@
 
 ## 安装与首次启动
 
-0.4.5 的安装包名为 `Tsukiakari-0.4.5-Setup.exe`，免安装版为 `Tsukiakari-0.4.5-Portable.exe`。程序文件为 `Tsukiakari.exe`，界面、快捷方式、托盘和通知显示「月明かり」。Windows 附件为 x64 测试构建，尚无 Authenticode 签名。 [全部发行附件](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/tag/v0.4.5)
+0.4.6 的安装包名为 `Tsukiakari-0.4.6-Setup.exe`，免安装版为 `Tsukiakari-0.4.6-Portable.exe`。程序文件为 `Tsukiakari.exe`，界面、快捷方式、托盘和通知显示「月明かり」。Windows 附件为 x64 测试构建，尚无 Authenticode 签名。 [全部发行附件](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/tag/v0.4.6)
 
 从源码构建时，Windows 构建清单写入 `artifacts/desktop-app.json`。
 
