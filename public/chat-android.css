@@ -4,12 +4,13 @@
   --android-muted: #b8b0c7;
   --android-border: #3c394e;
   --android-petal: #e3bed8;
+  height: 100vh;
   height: 100dvh;
   color: var(--android-ink);
   font-family: system-ui, "Noto Sans CJK SC", sans-serif;
   font-size: 16px;
 }
-.android-app .app-shell { height: 100dvh; min-height: 0; overflow: hidden; }
+.android-app .app-shell { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
 .android-app .sidebar-footer { display: none; }
 .android-app .app-rail { padding: 14px 6px; background: #121421; gap: 18px; }
 .android-brand { border-radius: 14px; flex: none; }
@@ -48,7 +49,11 @@
 .android-app .message-caption, .android-app .message-caption time { font-size: 12px; color: #b3a9c3; }
 .android-app .message-bubble pre { font-size: 13px; }
 .android-app .composer { padding: 5px 12px 8px; width: min(100%, 780px); margin-inline: auto; }
-.android-app .composer textarea { font-size: 16px; min-height: 48px; max-height: min(134px, 25dvh); }
+.android-app .composer textarea {
+  font-size: 16px; min-height: 48px;
+  max-height: min(134px, 25vh);
+  max-height: min(134px, 25dvh);
+}
 .android-app .composer .send-button { min-height: 48px !important; font-size: 15px !important; }
 .android-app .composer-note, .android-app .composer-status { font-size: 12px; }
 .android-app .composer-tools, .android-app .composer-actions { min-width: 0; }
@@ -62,7 +67,7 @@
 .android-app .page-heading h2 { font-size: 23px; }
 .android-app .page-nav .button { min-height: 46px; font-size: 14px; }
 .android-app .form-actions { flex-wrap: wrap; }
-.android-app .app-login { min-height: 100dvh; }
+.android-app .app-login { height: 100vh; height: 100dvh; }
 .android-app .app-login-form-wrap { min-width: 0; padding: 26px; }
 .android-app .app-login-form { width: min(100%, 440px); }
 .android-app .app-login-form > p, .android-app .app-login-remember { font-size: 1rem; }
@@ -179,10 +184,12 @@
   .android-app .page-content { flex: 1; min-height: 0; padding: 20px 13px 32px; }
   .android-app .page-section .account-form { grid-template-columns: 1fr; }
   .android-app .contacts-dialog {
-    inline-size: 100%; max-inline-size: 100%; margin: auto 0 0; max-block-size: min(76dvh, 590px);
+    inline-size: 100%; max-inline-size: 100%; margin: auto 0 0;
+    max-block-size: min(76vh, 590px);
+    max-block-size: min(76dvh, 590px);
     border-radius: 20px 20px 0 0; border-bottom: 0;
   }
-  .android-app .contacts-content { height: min(76dvh, 590px); }
+  .android-app .contacts-content { height: min(76vh, 590px); height: min(76dvh, 590px); }
   .android-app .contacts-tabs { gap: 4px; padding-inline: 10px; }
   .android-app .contacts-tabs .button { padding-inline: 3px; white-space: normal; }
   .android-app .android-notices { top: auto; bottom: calc(var(--phone-bar) + 7px); inset-inline: 10px; width: auto; }

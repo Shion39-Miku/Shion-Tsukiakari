@@ -2,7 +2,7 @@
 
 ## 安装及登录
 
-1. 下载 `Tsukiakari-0.4.6-Android.apk`，在 Android 9 或更新的设备上按系统提示确认安装。建议保持 Android System WebView 更新。 [Android APK](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.6/Tsukiakari-0.4.6-Android.apk) · [SHA-256](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.6/Tsukiakari-0.4.6-Android.apk.sha256)
+1. 下载 `Tsukiakari-0.4.7-Android.apk`，在 Android 9 或更新的设备上按系统提示确认安装。建议保持 Android System WebView 更新。 [Android APK](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.7/Tsukiakari-0.4.7-Android.apk) · [SHA-256](https://github.com/Shion39-Miku/Shion-Tsukiakari/releases/download/v0.4.7/Tsukiakari-0.4.7-Android.apk.sha256)
 2. 打开月明かり，在登录页输入共享聊天账号和密码。勾选「记住登录状态」可在重启后继续使用有效会话。网络或服务暂不可用时，登录页会提供「重试连接」。在「我的」里可退出登录。
 3. 手机、平板和新版 Windows 发行包使用同一账号时，会话、已读和最近 30 天的消息会自动同步。网站管理仍使用独立授权。 [共享后端上线配置](chat-retention.md)
 4. Release APK 的包名为 `wiki.shion.tsukiakari`，沿用此前交付的本机 0.1.1 签名。设备上使用该签名的旧包可覆盖升级。CI 与 QA 使用独立包名，数据各自保存在系统分配的应用空间。 [Android 应用签名](https://developer.android.com/studio/publish/app-signing)
@@ -45,7 +45,7 @@ pnpm android:build --debug
 pnpm security:check android ci qa
 ```
 
-CI 和 QA APK 的目录分别为 `artifacts/android/0.4.6-ci/` 与 `artifacts/android/0.4.6-qa/`。二者使用临时签名，适合独立安装验收。签名发布包由维护者从干净的发布提交运行 `pnpm android:build`，输出到 `artifacts/android/0.4.6/`。 [维护者签名与发布流程](releasing.md)
+CI 和 QA APK 的目录分别为 `artifacts/android/0.4.7-ci/` 与 `artifacts/android/0.4.7-qa/`。二者使用临时签名，适合独立安装验收。签名发布包由维护者从干净的发布提交运行 `pnpm android:build`，输出到 `artifacts/android/0.4.7/`。 [维护者签名与发布流程](releasing.md)
 
 QA 版包名以 `.qa` 结尾，预置供 ADB 转发的回环 HTTP，默认端口 4187。开发机可用 `TSUKIAKARI_ANDROID_QA_PORT` 在构建和启动演示服务时统一选择端口。Release 与 `.ci` 均从 `deploy/chat-public.json` 编译公开 HTTPS 地址。
 
@@ -54,7 +54,7 @@ QA 版包名以 `.qa` 结尾，预置供 ADB 转发的回环 HTTP，默认端口
 ```sh
 pnpm exec playwright install chromium
 pnpm check:android:ui
-pnpm check:android:device artifacts/android/0.4.6-ci/Tsukiakari-0.4.6-CI.apk artifacts/android/0.4.6-qa/Tsukiakari-0.4.6-QA.apk
+pnpm check:android:device artifacts/android/0.4.7-ci/Tsukiakari-0.4.7-CI.apk artifacts/android/0.4.7-qa/Tsukiakari-0.4.7-QA.apk
 ```
 
 设备验收脚本默认使用隔离的 `emulator-5554`，会调整该模拟器的显示与输入设置。测试数据留在忽略的 `artifacts/`。CI 验收截图只含演示数据。

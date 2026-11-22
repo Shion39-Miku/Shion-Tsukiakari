@@ -23,7 +23,7 @@ export function createPages({request,account,navigate,social,showAccounts,openMo
     if(section==='memory')return await social().memories(present);
     if(['appearance','notifications','close'].includes(section))return await social().settings(section,present);
     if(section==='connection'){const s=await request('/api/chat/session');if(!isCurrent())return;present('连接状态',el('dl',{class:'info-list'},el('dt',{},'聊天服务'),el('dd',{'data-connection-status':''},{online:'实时消息已连接',connecting:'正在连接',offline:'实时消息已断开 · 正在重连'}[connection()]),el('dt',{},'AI 接入'),el('dd',{},s.astrbotConfigured?'AstrBot · 人格由服务器管理':s.aiReady?'独立模型模式':'尚未配置')),account().role==='admin'&&(()=>{const b=action('配置软件服务与 AI','arrow');b.onclick=()=>navigate('software',{section:'service'});return b;})());return;}
-    const version = androidHost ? 'Android ' + navigator.userAgent.match(/TsukiakariAndroid\/([\d.]+)/)?.[1] : '0.4.6';
+    const version = androidHost ? 'Android ' + navigator.userAgent.match(/TsukiakariAndroid\/([\d.]+)/)?.[1] : '0.4.7';
     present('月明かり',el('img',{src:'/assets/brand/tsukiakari-192.png',width:88,height:88,alt:'月明かり应用图标',class:'about-icon'}),el('p',{class:'about-name'},'Tsukiakari · '+version),el('p',{},'服务器保留最近30天聊天记录。'),el('p',{class:'muted'},'设备会保存未发送的草稿和最近打开的会话。主动导出的文件由你保管。'),el('a',{href:'https://github.com/Shion39-Miku/Shion-Tsukiakari',target:'_blank',rel:'noreferrer'},'源码与使用教程'));return;
    }
    if(section==='users'){slot.replaceChildren(surface(kind,section,'用户管理',[]));await showAccounts(slot);return;}
